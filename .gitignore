@@ -1,0 +1,14 @@
+# STM32CubeIDE build files
+/Debug/
+/Release/
+/.build/
+/.ipch/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# IDE-specific
+*.user
+*.launch
+*.log
