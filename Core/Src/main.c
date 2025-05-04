@@ -32,18 +32,18 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 // semaforo principale (porta A)
-#define RED_PIN        GPIO_PIN_0   // PA0
-#define YELLOW_PIN     GPIO_PIN_1   // PA1
-#define GREEN_PIN      GPIO_PIN_4   // PA4
+#define RED_PIN        GPIO_PIN_0   // PA0 CN8-A0 GND CN7-8
+#define YELLOW_PIN     GPIO_PIN_1   // PA1 CN8-A1
+#define GREEN_PIN      GPIO_PIN_4   // PA4 CN8-A2
 
 // semaforo secondario (porta C)
-#define RED2_PIN       GPIO_PIN_9   // PC9
-#define YELLOW2_PIN    GPIO_PIN_8   // PC8
-#define GREEN2_PIN     GPIO_PIN_6   // PC6
+#define RED2_PIN       GPIO_PIN_9   // PC9 CN10-1 GND CN10-9
+#define YELLOW2_PIN    GPIO_PIN_8   // PC8 CN10-2 GND CN10-20
+#define GREEN2_PIN     GPIO_PIN_6   // PC6 CN10-4 GND CN10-32
 #define SECOND_PORT    GPIOC
 
 // LED ambulanza (porta B)
-#define BLUE_PIN       GPIO_PIN_0   // PB0
+#define BLUE_PIN       GPIO_PIN_0   // PB0 CN8-A3
 #define BLUE_PORT      GPIOB
 
 // bit per modalità ambulanza
