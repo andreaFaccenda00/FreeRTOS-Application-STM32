@@ -26,12 +26,7 @@
 #include "event_groups.h"
 /* USER CODE END Includes */
 
-/* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PTD */
-/* USER CODE END PTD */
-
 /* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
 // Semaforo principale (porta A, CN8)
 #define RED_PIN        GPIO_PIN_0   // PA0 (CN8-A0)
 #define YELLOW_PIN     GPIO_PIN_1   // PA1 (CN8-A1)
@@ -44,9 +39,9 @@
 #define SECOND_PORT    GPIOC
 
 // Terzo semaforo (porta C, CN7)
-#define RED3_Pin       GPIO_PIN_10  // PC10 (CN7-1)
-#define YELLOW3_Pin    GPIO_PIN_11  // PC11 (CN7-2)
-#define GREEN3_Pin     GPIO_PIN_12  // PC12 (CN7-3)
+#define RED3_PIN       GPIO_PIN_10  // PC10 (CN7-1)
+#define YELLOW3_PIN    GPIO_PIN_11  // PC11 (CN7-2)
+#define GREEN3_PIN     GPIO_PIN_12  // PC12 (CN7-3)
 #define THIRD_PORT     GPIOC
 
 // LED ambulanza (porta B, CN8-A3)
@@ -58,24 +53,9 @@
 #define BIT_AMB_DONE   (1 << 1)
 
 // Durata fasi in ms
-#define T_RED_MS       4000U
-#define T_YELLOW_MS    1500U
 #define T_GREEN_MS     4000U
+#define T_YELLOW_MS    1500U
 
-typedef struct {
-  TickType_t duration;      // durata fase in tick
-  uint16_t   setPins;       // pin da accendere (primo semaforo)
-  uint16_t   resetPins;     // pin da spegnere (primo semaforo)
-  UBaseType_t nextPhase;    // indice fase successiva
-} Phase_t;
-
-static const Phase_t phases[] = {
-  { pdMS_TO_TICKS(T_RED_MS),    RED_PIN,                YELLOW_PIN|GREEN_PIN, 1 },
-  { pdMS_TO_TICKS(T_YELLOW_MS), YELLOW_PIN,             RED_PIN|GREEN_PIN,    2 },
-  { pdMS_TO_TICKS(T_GREEN_MS),  GREEN_PIN,              RED_PIN|YELLOW_PIN,   3 },
-  { pdMS_TO_TICKS(T_GREEN_MS),  GREEN_PIN,              RED_PIN|YELLOW_PIN,   4 },
-  { pdMS_TO_TICKS(T_YELLOW_MS), YELLOW_PIN,             RED_PIN|GREEN_PIN,    0 },
-};
 /* USER CODE END PD */
 
 /* Private variables ---------------------------------------------------------*/
@@ -180,7 +160,6 @@ static void MX_GPIO_Init(void)
 
   /* Enable GPIO Ports Clock */
   __HAL_RCC_GPIOC_CLK_ENABLE();
-  __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
@@ -188,7 +167,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOA, RED_PIN|YELLOW_PIN|GREEN_PIN, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(BLUE_PORT, BLUE_PIN, GPIO_PIN_RESET);
   HAL_GPIO_WritePin(SECOND_PORT, RED2_PIN|YELLOW2_PIN|GREEN2_PIN, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(THIRD_PORT, RED3_Pin|YELLOW3_Pin|GREEN3_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(THIRD_PORT, RED3_PIN|YELLOW3_PIN|GREEN3_PIN, GPIO_PIN_RESET);
 
   /* Configure pins: Semaforo principale (PA0, PA1, PA4) */
   GPIO_InitStruct.Pin   = RED_PIN|YELLOW_PIN|GREEN_PIN;
@@ -206,7 +185,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(SECOND_PORT, &GPIO_InitStruct);
 
   /* Configure pins: Terzo semaforo (PC10, PC11, PC12) */
-  GPIO_InitStruct.Pin = RED3_Pin|YELLOW3_Pin|GREEN3_Pin;
+  GPIO_InitStruct.Pin = RED3_PIN|YELLOW3_PIN|GREEN3_PIN;
   HAL_GPIO_Init(THIRD_PORT, &GPIO_InitStruct);
 
   /* Configure USER button interrupt */
@@ -222,12 +201,11 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 /**
-  * @brief Task che gestisce i tre semafori con sincronizzazione del giallo
+  * @brief Task che gestisce i tre semafori (T-incrocio) con fasi gialle
   */
 void SemaforoTask(void *argument)
 {
-  UBaseType_t phase = 0;
-  TickType_t  lastWake = xTaskGetTickCount();
+  TickType_t lastWake = xTaskGetTickCount();
 
   for (;;)
   {
@@ -235,39 +213,69 @@ void SemaforoTask(void *argument)
 
     if (bits & BIT_AMB_REQ)
     {
-      // Emergenza ambulanza: semaforo1 ROSSO, semaforo2 VERDE, semaforo3 ROSSO
+      // Emergenza ambulanza: sem1 rosso, sem2 verde, sem3 rosso
       HAL_GPIO_WritePin(GPIOA, RED_PIN, GPIO_PIN_SET);
       HAL_GPIO_WritePin(GPIOA, YELLOW_PIN|GREEN_PIN, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(SECOND_PORT, RED2_PIN|YELLOW2_PIN|GREEN2_PIN, GPIO_PIN_RESET);
-      HAL_GPIO_WritePin(SECOND_PORT, GREEN2_PIN, GPIO_PIN_SET);
-      HAL_GPIO_WritePin(THIRD_PORT, RED3_Pin, GPIO_PIN_SET);
-      HAL_GPIO_WritePin(THIRD_PORT, YELLOW3_Pin|GREEN3_Pin, GPIO_PIN_RESET);
 
-      // Attendi fine ambulanza
+      HAL_GPIO_WritePin(SECOND_PORT, GREEN2_PIN, GPIO_PIN_SET);
+      HAL_GPIO_WritePin(SECOND_PORT, RED2_PIN|YELLOW2_PIN, GPIO_PIN_RESET);
+
+      HAL_GPIO_WritePin(THIRD_PORT, RED3_PIN, GPIO_PIN_SET);
+      HAL_GPIO_WritePin(THIRD_PORT, YELLOW3_PIN|GREEN3_PIN, GPIO_PIN_RESET);
+
+      // Attendi fine emergenza
       xEventGroupWaitBits(semaEventGroup, BIT_AMB_DONE, pdTRUE, pdTRUE, portMAX_DELAY);
-      phase    = 1;
       lastWake = xTaskGetTickCount();
       continue;
     }
 
-    // 1) Semaforo principale
-    HAL_GPIO_WritePin(GPIOA, phases[phase].setPins, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(GPIOA, phases[phase].resetPins, GPIO_PIN_RESET);
+    // Fase 1: sem1+3 VERDI, sem2 ROSSO
+    HAL_GPIO_WritePin(GPIOA, GREEN_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOA, RED_PIN|YELLOW_PIN, GPIO_PIN_RESET);
 
-    // 2) Semaforo secondario (invertito)
-    HAL_GPIO_WritePin(SECOND_PORT, RED2_PIN|YELLOW2_PIN|GREEN2_PIN, GPIO_PIN_RESET);
-    if      (phases[phase].setPins & RED_PIN)   HAL_GPIO_WritePin(SECOND_PORT, GREEN2_PIN, GPIO_PIN_SET);
-    else if (phases[phase].setPins & GREEN_PIN) HAL_GPIO_WritePin(SECOND_PORT, RED2_PIN,    GPIO_PIN_SET);
-    else                                        HAL_GPIO_WritePin(SECOND_PORT, YELLOW2_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(SECOND_PORT, RED2_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(SECOND_PORT, YELLOW2_PIN|GREEN2_PIN, GPIO_PIN_RESET);
 
-    // 3) Terzo semaforo (segue il principale, giallo sincronizzato)
-    HAL_GPIO_WritePin(THIRD_PORT, RED3_Pin,    (phases[phase].setPins & RED_PIN)    ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(THIRD_PORT, YELLOW3_Pin, (phases[phase].setPins & YELLOW_PIN) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(THIRD_PORT, GREEN3_Pin,  (phases[phase].setPins & GREEN_PIN)  ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(THIRD_PORT, GREEN3_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(THIRD_PORT, RED3_PIN|YELLOW3_PIN, GPIO_PIN_RESET);
 
-    // 4) Delay fino alla fase successiva
-    vTaskDelayUntil(&lastWake, phases[phase].duration);
-    phase = phases[phase].nextPhase;
+    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(T_GREEN_MS));
+
+    // Fase 2: sem1+3 GIALLO, sem2 ROSSO
+    HAL_GPIO_WritePin(GPIOA, YELLOW_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOA, RED_PIN|GREEN_PIN, GPIO_PIN_RESET);
+
+    HAL_GPIO_WritePin(SECOND_PORT, RED2_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(SECOND_PORT, YELLOW2_PIN|GREEN2_PIN, GPIO_PIN_RESET);
+
+    HAL_GPIO_WritePin(THIRD_PORT, YELLOW3_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(THIRD_PORT, RED3_PIN|GREEN3_PIN, GPIO_PIN_RESET);
+
+    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(T_YELLOW_MS));
+
+    // Fase 3: sem1+3 ROSSI, sem2 VERDI
+    HAL_GPIO_WritePin(GPIOA, RED_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOA, YELLOW_PIN|GREEN_PIN, GPIO_PIN_RESET);
+
+    HAL_GPIO_WritePin(SECOND_PORT, GREEN2_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(SECOND_PORT, RED2_PIN|YELLOW2_PIN, GPIO_PIN_RESET);
+
+    HAL_GPIO_WritePin(THIRD_PORT, RED3_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(THIRD_PORT, YELLOW3_PIN|GREEN3_PIN, GPIO_PIN_RESET);
+
+    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(T_GREEN_MS));
+
+    // Fase 4: sem1+3 ROSSI, sem2 GIALLO
+    HAL_GPIO_WritePin(GPIOA, RED_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOA, GREEN_PIN|YELLOW_PIN, GPIO_PIN_RESET);
+
+    HAL_GPIO_WritePin(SECOND_PORT, YELLOW2_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(SECOND_PORT, RED2_PIN|GREEN2_PIN, GPIO_PIN_RESET);
+
+    HAL_GPIO_WritePin(THIRD_PORT, RED3_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(THIRD_PORT, YELLOW3_PIN|GREEN3_PIN, GPIO_PIN_RESET);
+
+    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(T_YELLOW_MS));
   }
 }
 
@@ -329,7 +337,7 @@ void Error_Handler(void)
 
 #ifdef USE_FULL_ASSERT
 /**
-  * @brief Riportai file e riga in caso di assert failure
+  * @brief Riporta file e riga in caso di assert failure
   */
 void assert_failed(uint8_t *file, uint32_t line)
 {
