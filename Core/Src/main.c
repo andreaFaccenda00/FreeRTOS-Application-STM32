@@ -2,13 +2,20 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body (semafori + pedonale con lampeggio finale)
+  * @brief          : Main program body - Traffic lights with pedestrian crossing
+  *                   (includes final pedestrian blinking phase)
   ******************************************************************************
-  * @attention
+  * @details
+  * This application controls a system of three traffic lights using FreeRTOS.
+  * Traffic lights 1 and 3 operate alternately. After both complete their cycles,
+  * traffic light 2 activates, allowing vehicle passage and pedestrian crossing.
+  * The pedestrian LED remains solid for a set duration, then blinks before turning off.
+  * Tasks are synchronized using FreeRTOS semaphores.
   *
-  * Copyright (c) 2025 STMicroelectronics.
-  * All rights reserved.
-  *
+  * Traffic lights:
+  * - Sem1Task (PA0, PA1, PA4): Red, Yellow, Green
+  * - Sem3Task (PC10, PC11, PC12): Red, Yellow, Green
+  * - Sem2Task (PC6, PC8, PC9 + PB5): Red, Yellow, Green + Pedestrian LED
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -16,6 +23,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
+#include "semphr.h"    // per FreeRTOS Semaphore API
 
 /* Private defines -----------------------------------------------------------*/
 // Semaforo principale (porta A, CN8)
@@ -24,15 +32,15 @@
 #define GREEN_PIN      GPIO_PIN_4
 
 // Semaforo secondario (porta C, CN10)
-#define RED2_PIN       GPIO_PIN_9
-#define YELLOW2_PIN    GPIO_PIN_8
-#define GREEN2_PIN     GPIO_PIN_6
+#define RED2_PIN       GPIO_PIN_9 // CN10 Pin 1
+#define YELLOW2_PIN    GPIO_PIN_8 // CN10 Pin 2
+#define GREEN2_PIN     GPIO_PIN_6 // CN10 Pin 4
 #define SECOND_PORT    GPIOC
 
 // Terzo semaforo (porta C, CN7)
-#define RED3_PIN       GPIO_PIN_10
-#define YELLOW3_PIN    GPIO_PIN_11
-#define GREEN3_PIN     GPIO_PIN_12
+#define RED3_PIN       GPIO_PIN_10 // CN7 Pin 1
+#define YELLOW3_PIN    GPIO_PIN_11 // CN7 Pin 2
+#define GREEN3_PIN     GPIO_PIN_12 // CN7 Pin 3
 #define THIRD_PORT     GPIOC
 
 // LED pedonale (porta B, PB5 → CN9-5 / D4)
@@ -48,21 +56,34 @@
 #define T_GREEN_MS     4000U
 #define T_YELLOW_MS    1500U
 
+/* Private typedef -----------------------------------------------------------*/
+/* (nessuno) */
+
 /* Private variables ---------------------------------------------------------*/
 COM_InitTypeDef BspCOMInit;
 
-/* Definitions for defaultTask */
-osThreadId_t defaultTaskHandle;
-const osThreadAttr_t defaultTask_attributes = {
-  .name       = "defaultTask",
-  .priority   = (osPriority_t) osPriorityNormal,
+// Semafori software per sincronizzazione
+SemaphoreHandle_t sem1SemHandle;
+SemaphoreHandle_t sem2SemHandle;
+SemaphoreHandle_t sem3SemHandle;
+
+/* Task handles e attributi */
+osThreadId_t sem1TaskHandle;
+osThreadId_t sem2TaskHandle;
+osThreadId_t sem3TaskHandle;
+
+const osThreadAttr_t sem1Task_attributes = {
+  .name       = "Sem1Task",
+  .priority   = (osPriority_t) osPriorityAboveNormal,
   .stack_size = 128 * 4
 };
-
-/* Definitions for semaforoTask */
-osThreadId_t semaforoTaskHandle;
-const osThreadAttr_t semaforoTask_attributes = {
-  .name       = "semaforoTask",
+const osThreadAttr_t sem2Task_attributes = {
+  .name       = "Sem2Task",
+  .priority   = (osPriority_t) osPriorityAboveNormal,
+  .stack_size = 128 * 4
+};
+const osThreadAttr_t sem3Task_attributes = {
+  .name       = "Sem3Task",
   .priority   = (osPriority_t) osPriorityAboveNormal,
   .stack_size = 128 * 4
 };
@@ -70,26 +91,28 @@ const osThreadAttr_t semaforoTask_attributes = {
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-void StartDefaultTask(void *argument);
-void SemaforoTask(void *argument);
+void Sem1Task(void *argument);
+void Sem2Task(void *argument);
+void Sem3Task(void *argument);
+void Error_Handler(void);
+#ifdef  USE_FULL_ASSERT
+void assert_failed(uint8_t *file, uint32_t line);
+#endif
 
 /**
   * @brief  The application entry point.
   */
 int main(void)
 {
+  /* MCU e HAL init */
   HAL_Init();
   SystemClock_Config();
   MX_GPIO_Init();
 
-  /* Init RTOS */
+  /* Init RTOS kernel */
   osKernelInitialize();
 
-  /* Create threads */
-  defaultTaskHandle  = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
-  semaforoTaskHandle = osThreadNew(SemaforoTask,    NULL, &semaforoTask_attributes);
-
-  /* Init onboard LED and user button */
+  /* Init onboard LED e user button */
   BSP_LED_Init(LED_GREEN);
   BSP_PB_Init(BUTTON_USER, BUTTON_MODE_EXTI);
 
@@ -103,91 +126,129 @@ int main(void)
     Error_Handler();
   }
 
-  /* Start scheduler */
+  /* Creazione semafori software */
+  sem1SemHandle = xSemaphoreCreateBinary();
+  sem3SemHandle = xSemaphoreCreateBinary();
+  sem2SemHandle = xSemaphoreCreateCounting(2, 0);  // max count=2, iniziale=0
+  if (!sem1SemHandle || !sem2SemHandle || !sem3SemHandle) {
+    Error_Handler();
+  }
+  /* All'avvio, rilascio subito Sem1 e Sem3 */
+  xSemaphoreGive(sem1SemHandle);
+  xSemaphoreGive(sem3SemHandle);
+
+  /* Creazione dei task */
+  sem1TaskHandle = osThreadNew(Sem1Task, NULL, &sem1Task_attributes);
+  sem2TaskHandle = osThreadNew(Sem2Task, NULL, &sem2Task_attributes);
+  sem3TaskHandle = osThreadNew(Sem3Task, NULL, &sem3Task_attributes);
+
+  /* Avvio scheduler */
   osKernelStart();
-  /* Should never get here */
+
+  /* Non dovrebbe mai arrivare qui */
   while (1) {}
 }
 
 /**
-  * @brief  Task che gestisce i tre semafori + pedonale (5 fasi)
+  * @brief  Task che gestisce il semaforo 1 (GPIOA)
   */
-void SemaforoTask(void *argument)
+void Sem1Task(void *argument)
 {
-  TickType_t lastWake = xTaskGetTickCount();
-
   for (;;)
   {
-    // Fase 1: sem1+3 VERDI, sem2 ROSSO
+    /* attendo il mio semaforo */
+    xSemaphoreTake(sem1SemHandle, portMAX_DELAY);
+
+    /* verde */
     HAL_GPIO_WritePin(GPIOA, GREEN_PIN, GPIO_PIN_SET);
     HAL_GPIO_WritePin(GPIOA, RED_PIN|YELLOW_PIN, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(SECOND_PORT, RED2_PIN, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(SECOND_PORT, YELLOW2_PIN|GREEN2_PIN, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(THIRD_PORT, GREEN3_PIN, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(THIRD_PORT, RED3_PIN|YELLOW3_PIN, GPIO_PIN_RESET);
-    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(T_GREEN_MS));
+    osDelay(T_GREEN_MS);
 
-    // Fase 2: sem1+3 GIALLO, sem2 ROSSO
+    /* giallo */
     HAL_GPIO_WritePin(GPIOA, YELLOW_PIN, GPIO_PIN_SET);
     HAL_GPIO_WritePin(GPIOA, RED_PIN|GREEN_PIN, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(SECOND_PORT, RED2_PIN, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(SECOND_PORT, YELLOW2_PIN|GREEN2_PIN, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(THIRD_PORT, YELLOW3_PIN, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(THIRD_PORT, RED3_PIN|GREEN3_PIN, GPIO_PIN_RESET);
-    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(T_YELLOW_MS));
+    osDelay(T_YELLOW_MS);
 
-    // Fase 3: sem1+3 ROSSI, sem2 VERDI
+    /* rosso */
     HAL_GPIO_WritePin(GPIOA, RED_PIN, GPIO_PIN_SET);
     HAL_GPIO_WritePin(GPIOA, YELLOW_PIN|GREEN_PIN, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(SECOND_PORT, GREEN2_PIN, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(SECOND_PORT, RED2_PIN|YELLOW2_PIN, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(THIRD_PORT, RED3_PIN, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(THIRD_PORT, YELLOW3_PIN|GREEN3_PIN, GPIO_PIN_RESET);
-    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(T_GREEN_MS));
 
-    // Fase 4: sem1+3 ROSSI, sem2 GIALLO
-    HAL_GPIO_WritePin(GPIOA, RED_PIN, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(GPIOA, YELLOW_PIN|GREEN_PIN, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(SECOND_PORT, YELLOW2_PIN, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(SECOND_PORT, RED2_PIN|GREEN2_PIN, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(THIRD_PORT, RED3_PIN, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(THIRD_PORT, YELLOW3_PIN|GREEN3_PIN, GPIO_PIN_RESET);
-    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(T_YELLOW_MS));
-
-    // Fase 5: ALL-RED + Pedonale con lampeggio finale
-    // — tutti i veicoli rossi —
-    HAL_GPIO_WritePin(GPIOA, RED_PIN, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(GPIOA, YELLOW_PIN|GREEN_PIN, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(SECOND_PORT, RED2_PIN, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(SECOND_PORT, YELLOW2_PIN|GREEN2_PIN, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(THIRD_PORT, RED3_PIN, GPIO_PIN_SET);
-    HAL_GPIO_WritePin(THIRD_PORT, YELLOW3_PIN|GREEN3_PIN, GPIO_PIN_RESET);
-
-    // — pedonale acceso fisso per T_PED_TOTAL_MS - T_PED_BLINK_MS —
-    HAL_GPIO_WritePin(PED_PORT, PED_PIN, GPIO_PIN_SET);
-    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(T_PED_TOTAL_MS - T_PED_BLINK_MS));
-
-    // — lampeggio negli ultimi T_PED_BLINK_MS —
-    {
-      const uint32_t toggles = T_PED_BLINK_MS / T_PED_BLINK_INTERVAL_MS;
-      for (uint32_t i = 0; i < toggles; ++i) {
-        HAL_GPIO_TogglePin(PED_PORT, PED_PIN);
-        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(T_PED_BLINK_INTERVAL_MS));
-      }
-    }
-    // assicurarsi pedonale spento
-    HAL_GPIO_WritePin(PED_PORT, PED_PIN, GPIO_PIN_RESET);
+    /* segnalo Sem2 (1 token) */
+    xSemaphoreGive(sem2SemHandle);
   }
 }
 
 /**
-  * @brief  Function implementing the defaultTask thread.
+  * @brief  Task che gestisce il semaforo 3 (GPIOC)
   */
-void StartDefaultTask(void *argument)
+void Sem3Task(void *argument)
 {
   for (;;)
   {
-    osDelay(1);
+    xSemaphoreTake(sem3SemHandle, portMAX_DELAY);
+
+    /* verde */
+    HAL_GPIO_WritePin(THIRD_PORT, GREEN3_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(THIRD_PORT, RED3_PIN|YELLOW3_PIN, GPIO_PIN_RESET);
+    osDelay(T_GREEN_MS);
+
+    /* giallo */
+    HAL_GPIO_WritePin(THIRD_PORT, YELLOW3_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(THIRD_PORT, RED3_PIN|GREEN3_PIN, GPIO_PIN_RESET);
+    osDelay(T_YELLOW_MS);
+
+    /* rosso */
+    HAL_GPIO_WritePin(THIRD_PORT, RED3_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(THIRD_PORT, YELLOW3_PIN|GREEN3_PIN, GPIO_PIN_RESET);
+
+    /* segnalo Sem2 (1 token) */
+    xSemaphoreGive(sem2SemHandle);
+  }
+}
+
+/**
+  * @brief  Task che gestisce il semaforo 2 (GPIOC) + pedonale
+  */
+void Sem2Task(void *argument)
+{
+  for (;;)
+  {
+    /* attendo i due token da Sem1 e Sem3 */
+    xSemaphoreTake(sem2SemHandle, portMAX_DELAY);
+    xSemaphoreTake(sem2SemHandle, portMAX_DELAY);
+
+    /* verde */
+    HAL_GPIO_WritePin(SECOND_PORT, GREEN2_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(SECOND_PORT, RED2_PIN|YELLOW2_PIN, GPIO_PIN_RESET);
+    osDelay(T_GREEN_MS);
+
+    /* giallo */
+    HAL_GPIO_WritePin(SECOND_PORT, YELLOW2_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(SECOND_PORT, RED2_PIN|GREEN2_PIN, GPIO_PIN_RESET);
+    osDelay(T_YELLOW_MS);
+
+    /* rosso veicoli */
+    HAL_GPIO_WritePin(SECOND_PORT, RED2_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(SECOND_PORT, YELLOW2_PIN|GREEN2_PIN, GPIO_PIN_RESET);
+
+    /* pedonale acceso fisso */
+    HAL_GPIO_WritePin(PED_PORT, PED_PIN, GPIO_PIN_SET);
+    osDelay(T_PED_TOTAL_MS - T_PED_BLINK_MS);
+
+    /* lampeggio pedonale */
+    {
+      const uint32_t toggles = T_PED_BLINK_MS / T_PED_BLINK_INTERVAL_MS;
+      for (uint32_t i = 0; i < toggles; ++i)
+      {
+        HAL_GPIO_TogglePin(PED_PORT, PED_PIN);
+        osDelay(T_PED_BLINK_INTERVAL_MS);
+      }
+    }
+    HAL_GPIO_WritePin(PED_PORT, PED_PIN, GPIO_PIN_RESET);
+
+    /* rilascio Sem1 e Sem3 per ricominciare il ciclo */
+    xSemaphoreGive(sem1SemHandle);
+    xSemaphoreGive(sem3SemHandle);
   }
 }
 
@@ -260,24 +321,9 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pin = RED3_PIN|YELLOW3_PIN|GREEN3_PIN;
   HAL_GPIO_Init(THIRD_PORT, &GPIO_InitStruct);
 
-  /* USER button (EXTI) */
-  GPIO_InitStruct.Pin   = B1_Pin;
-  GPIO_InitStruct.Mode  = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull  = GPIO_NOPULL;
-  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
-}
-
-/**
-  * @brief  HAL tick callback (TIM6)
-  */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-  if (htim->Instance == TIM6) {
-    HAL_IncTick();
-  }
 }
 
 /**
@@ -291,10 +337,10 @@ void Error_Handler(void)
 
 #ifdef  USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
+  * @brief  Reports file name and line number
   */
 void assert_failed(uint8_t *file, uint32_t line)
 {
-  /* User can add debug printing here */
+  /* Optional: insert debug print here */
 }
 #endif
