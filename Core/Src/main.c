@@ -64,20 +64,20 @@ osThreadId_t estTaskHandle;
 
 const osThreadAttr_t nsTask_attributes = { .name = "NSTask", .priority = osPriorityAboveNormal, .stack_size = 128*4 };
 const osThreadAttr_t estTask_attributes = { .name = "EstTask", .priority = osPriorityAboveNormal, .stack_size = 128*4 };
-/* Emergency task handle e attributi */
+/* Emergency task handle e attributi
 osThreadId_t emergencyTaskHandle;
 const osThreadAttr_t emergencyTask_attributes = {
     .name       = "EmergencyLED",
     .priority   = osPriorityRealtime,  // la più alta
     .stack_size = 128*4
-};
+};  */
 
 /* Prototypes ----------------------------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 void NSTask(void *argument);
 void EstTask(void *argument);
-void EmergencyTask(void *argument);
+//void EmergencyTask(void *argument);
 void Error_Handler(void);
 #ifdef USE_FULL_ASSERT
 void assert_failed(uint8_t* file, uint32_t line);
@@ -111,11 +111,11 @@ int main(void)
     // Create tasks
     nsTaskHandle  = osThreadNew(NSTask,  NULL, &nsTask_attributes);
     estTaskHandle = osThreadNew(EstTask, NULL, &estTask_attributes);
-    emergencyTaskHandle = osThreadNew(
+    /* emergencyTaskHandle = osThreadNew(
         EmergencyTask,
         NULL,
         &emergencyTask_attributes
-    );
+    ); */
 
     osKernelStart();
     while(1);
@@ -267,55 +267,8 @@ void EstTask(void *argument)
     }
 }
 
-void EmergencyTask(void *argument)
-{
-    TickType_t xLastWakeTime = xTaskGetTickCount();
-    const TickType_t xFrequency = pdMS_TO_TICKS(PERIOD_EMERGENCY_MS);
+//void EmergencyTask(void *argument){}
 
-    for (;;)
-    {
-        // Sleep fino al prossimo intervallo fisso di 30 s
-        vTaskDelayUntil(&xLastWakeTime, xFrequency);
-
-        // Log ON
-        uint32_t sec = osKernelGetTickCount() / 1000;
-        printf("%4lus | EMERGENCY | ON\r\n", sec);
-
-        // 1) Sospendi i task semafori
-        vTaskSuspend(nsTaskHandle);
-        vTaskSuspend(estTaskHandle);
-
-        // 2) Metti tutti i semafori su ROSSO
-        HAL_GPIO_WritePin(S_PORT, S_GREEN_PIN|S_YELLOW_PIN, GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(S_PORT, S_RED_PIN,               GPIO_PIN_SET);
-
-        HAL_GPIO_WritePin(N_PORT, N_GREEN_PIN|N_YELLOW_PIN, GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(N_PORT, N_RED_PIN,                GPIO_PIN_SET);
-
-        HAL_GPIO_WritePin(E_PORT, E_GREEN_PIN|E_YELLOW_PIN, GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(E_PORT, E_RED_PIN,                GPIO_PIN_SET);
-
-        // 3) Accendi LED blu
-        HAL_GPIO_WritePin(EMERGENCY_LED_PORT, EMERGENCY_LED_PIN, GPIO_PIN_SET);
-
-        // 4) Mantieni LED acceso per 2 s
-        vTaskDelay(pdMS_TO_TICKS(LED_ON_EMERGENCY_MS));
-
-        // 5) Spegni LED e log OFF
-        HAL_GPIO_WritePin(EMERGENCY_LED_PORT, EMERGENCY_LED_PIN, GPIO_PIN_RESET);
-        sec = osKernelGetTickCount() / 1000;
-        printf("%4lus | EMERGENCY | OFF\r\n", sec);
-
-        // 6) Ripulisci semafori e rilancia NS
-        while (xSemaphoreTake(semNS,  0) == pdTRUE) {}
-        while (xSemaphoreTake(semEst, 0) == pdTRUE) {}
-        xSemaphoreGive(semNS);
-
-        // 7) Riattiva i task semafori
-        vTaskResume(nsTaskHandle);
-        vTaskResume(estTaskHandle);
-    }
-}
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   if (GPIO_Pin == GPIO_PIN_13)
