@@ -1,24 +1,24 @@
 SWV ITM Data Console - ITM Port: 0
-   0s | Nord |   1 veicoli | VERDE   
-   0s | Prio |  14 veicoli | EXTEND  
-   0s | Sud  |  14 veicoli | VERDE   
-   4s | Nord |   1 veicoli | GIALLO  
-   5s | Nord |   1 veicoli | ROSSO   
-   8s | Sud  |  14 veicoli | GIALLO  
-   9s | Sud  |  14 veicoli | ROSSO   
-   9s | Est  |   4 veicoli | VERDE   
-  13s | Est  |   4 veicoli | GIALLO  
-  15s | Est  |   4 veicoli | ROSSO   
-  15s | Ped  |   -       | ON      
-  19s | Ped  |   -       | BLINK   
-  20s | Ped  |   -       | OFF     
-  20s | Sud  |   3 veicoli | VERDE   
-  20s | Nord |  10 veicoli | VERDE   
-  24s | Sud  |   3 veicoli | GIALLO  
-  24s | Nord |  10 veicoli | GIALLO  
-  25s | Sud  |   3 veicoli | ROSSO   
-  25s | Nord |  10 veicoli | ROSSO   
-  25s | Est  |   1 veicoli | VERDE   
-  29s | Est  |   1 veicoli | GIALLO  
-  31s | Est  |   1 veicoli | ROSSO   
-  31s | Ped  |   -       | ON      
+   0s | NS       | S= 1 N=14 | VERDE
+   4s | NS       | S= 1 N=14 | GIALLO
+   5s | NS       | S= 1 N=14 | ROSSO
+   5s | Est      |      4 | VERDE
+   9s | Est      |      4 | GIALLO
+  11s | Est      |      4 | ROSSO
+  11s | Ped      |      -  | ON
+  15s | Ped      |      -  | BLINK
+  16s | Ped      |      -  | OFF
+  16s | NS       | S= 3 N=10 | VERDE
+  16s | Button   |      -    | PED_PRIO
+  16s | NS       | S= 3 N=10 | GIALLO
+  18s | NS       | S= 3 N=10 | ROSSO
+  18s | Est      |      1 | VERDE(PRIO)
+  20s | Est      |      1 | GIALLO
+  21s | Est      |      1 | ROSSO
+  21s | Ped      |      -  | ON
+  25s | Ped      |      -  | BLINK
+  26s | Ped      |      -  | OFF
+  26s | NS       | S= 9 N=13 | VERDE
+  30s | NS       | S= 9 N=13 | GIALLO
+  31s | NS       | S= 9 N=13 | ROSSO
+  31s | Est      |     17 | VERDE
