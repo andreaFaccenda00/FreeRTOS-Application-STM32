@@ -1,24 +1,16 @@
 SWV ITM Data Console - ITM Port: 0
    0s | NS       | S= 1 N=14 | VERDE
-   4s | NS       | S= 1 N=14 | GIALLO
+>>> Entering EstTask loop
+   4s | NS       | S= 1 N=14 | GIALLO(INT)
    5s | NS       | S= 1 N=14 | ROSSO
-   5s | Est      |      4 | VERDE
-   9s | Est      |      4 | GIALLO
-  11s | Est      |      4 | ROSSO
-  11s | Ped      |      -  | ON
-  15s | Ped      |      -  | BLINK
-  16s | Ped      |      -  | OFF
-  16s | NS       | S= 3 N=10 | VERDE
-  16s | Button   |      -    | PED_PRIO
-  16s | NS       | S= 3 N=10 | GIALLO
-  18s | NS       | S= 3 N=10 | ROSSO
-  18s | Est      |      1 | VERDE(PRIO)
-  20s | Est      |      1 | GIALLO
-  21s | Est      |      1 | ROSSO
-  21s | Ped      |      -  | ON
-  25s | Ped      |      -  | BLINK
-  26s | Ped      |      -  | OFF
-  26s | NS       | S= 9 N=13 | VERDE
-  30s | NS       | S= 9 N=13 | GIALLO
-  31s | NS       | S= 9 N=13 | ROSSO
-  31s | Est      |     17 | VERDE
+   5s | Ped      |      -  | ON
+   9s | Ped      |      -  | BLINK
+  10s | Ped      |      -  | OFF
+  10s | NS       | S= 4 N= 3 | VERDE
+  14s | NS       | S= 4 N= 3 | GIALLO(INT)
+  16s | NS       | S= 4 N= 3 | ROSSO
+  16s | Ped      |      -  | ON
+  20s | Ped      |      -  | BLINK
+  21s | Ped      |      -  | OFF
+  21s | NS       | S=10 N= 1 | VERDE
+  25s | NS       | S=10 N= 1 | GIALLO(INT)

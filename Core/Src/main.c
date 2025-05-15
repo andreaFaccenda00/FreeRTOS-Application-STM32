@@ -3,12 +3,13 @@
   ******************************************************************************
   * @file           : main.c
   * @brief          : Traffic lights with pedestrian crossing and synchronized NS phase
-  *****************************************************************************/
+  *                   using CMSIS-RTOS2 API
+  ******************************************************************************
+*/
 
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "cmsis_os.h"
-#include "semphr.h"
+#include "cmsis_os2.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
@@ -26,8 +27,9 @@
 #define T_PED_BLINK_INTERVAL_MS 250U
 
 #define PED_FLAG    (1U << 0)
+#define IRQ_FLAG    (1U << 0)
 
-// South GPIO (CN8)
+/* South GPIO (CN8) */
 #define S_RED_PIN       GPIO_PIN_0
 #define S_YELLOW_PIN    GPIO_PIN_1
 #define S_GREEN_PIN     GPIO_PIN_4
@@ -45,13 +47,13 @@
 #define E_GREEN_PIN     GPIO_PIN_6 // CN10 Pin 4
 #define E_PORT          GPIOC
 
-// Pedestrian SUD (PB5 → CN9-5 / D4)
+/* Pedestrian South (PB5 → CN9-5 / D4) */
 #define S_PED_PIN       GPIO_PIN_5
 #define S_PED_PORT      GPIOB
 
-// Pedestrian EST (PB7 → CN7-21)
-#define E_PED_PORT GPIOB
-#define E_PED_PIN  GPIO_PIN_7
+/* Pedestrian East (PB7 → CN7-21) */
+#define E_PED_PIN       GPIO_PIN_7
+#define E_PED_PORT      GPIOB
 
 /* Globals -------------------------------------------------------------------*/
 static const TrafficLight_t tlSouth = { S_PORT, S_RED_PIN,    S_YELLOW_PIN,   S_GREEN_PIN   };
@@ -67,16 +69,16 @@ static const TrafficLight_t allLights[] = {
 };
 
 COM_InitTypeDef       BspCOMInit;
-SemaphoreHandle_t     semNS, semEst, semPed;
+osSemaphoreId_t       semNS, semEst, semPed;
 static osEventFlagsId_t pedFlags;
 osThreadId_t          nsTaskHandle, estTaskHandle, pedTaskHandle;
 
 typedef enum { PHASE_NS, PHASE_EST, PHASE_PED } Phase_t;
 static volatile Phase_t currentPhase = PHASE_NS;
 
-const osThreadAttr_t nsTask_attributes  = { .name = "NSTask",  .priority = osPriorityAboveNormal,      .stack_size = 128*4 };
-const osThreadAttr_t estTask_attributes = { .name = "EstTask", .priority = osPriorityAboveNormal,      .stack_size = 128*4 };
-const osThreadAttr_t pedTaskAttr        = { .name = "PedTask", .priority = osPriorityAboveNormal+1,   .stack_size = 128*4 };
+const osThreadAttr_t nsTask_attributes  = { .name = "NSTask",  .priority = osPriorityAboveNormal,    .stack_size = 128*4 };
+const osThreadAttr_t estTask_attributes = { .name = "EstTask", .priority = osPriorityAboveNormal,    .stack_size = 128*4 };
+const osThreadAttr_t pedTaskAttr        = { .name = "PedTask", .priority = osPriorityAboveNormal1,  .stack_size = 128*4 };
 
 /* Prototypes ----------------------------------------------------------------*/
 void SystemClock_Config(void);
@@ -85,9 +87,6 @@ void NSTask(void *argument);
 void EstTask(void *argument);
 void PedTask(void *argument);
 void Error_Handler(void);
-#ifdef USE_FULL_ASSERT
-void assert_failed(uint8_t* file, uint32_t line);
-#endif
 
 /*============================================================================*/
 /*                                  MAIN                                      */
@@ -106,14 +105,12 @@ int main(void)
         Error_Handler();
     }
 
-    semNS  = xSemaphoreCreateBinary();
-    semEst = xSemaphoreCreateCounting(2, 0);
-    semPed = xSemaphoreCreateBinary();
+    semNS  = osSemaphoreNew(1, 1, NULL);
+    semEst = osSemaphoreNew(2, 0, NULL);
+    semPed = osSemaphoreNew(1, 0, NULL);
     if (!semNS || !semEst || !semPed) {
         Error_Handler();
     }
-
-    xSemaphoreGive(semNS);
 
     BspCOMInit.BaudRate   = 115200;
     BspCOMInit.WordLength = COM_WORDLENGTH_8B;
@@ -139,21 +136,19 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     if (GPIO_Pin == GPIO_PIN_13)
     {
-        BaseType_t higher = pdFALSE;
         osEventFlagsSet(pedFlags, PED_FLAG);
 
         if (currentPhase == PHASE_NS) {
-            xTaskNotifyFromISR(nsTaskHandle, 0, eNoAction, &higher);
+            osThreadFlagsSet(nsTaskHandle, IRQ_FLAG);
         } else if (currentPhase == PHASE_EST) {
-            xTaskNotifyFromISR(estTaskHandle, 0, eNoAction, &higher);
+            osThreadFlagsSet(estTaskHandle, IRQ_FLAG);
         }
-        portYIELD_FROM_ISR(higher);
-
 
         uint32_t sec = osKernelGetTickCount()/1000;
         printf("%4lus | Button   |      -    | PED_PRIO\r\n", sec);
     }
 }
+
 /*============================================================================*/
 /*                                 NSTask                                      */
 /*============================================================================*/
@@ -162,26 +157,21 @@ void NSTask(void *argument)
     uint32_t vehiclesS, vehiclesN, sec;
     for (;;)
     {
-        xSemaphoreTake(semNS, portMAX_DELAY);
+        osSemaphoreAcquire(semNS, osWaitForever);
+
         vehiclesS = (rand() % MAX_VEHICLES) + 1;
         vehiclesN = (rand() % MAX_VEHICLES) + 1;
         sec = osKernelGetTickCount() / 1000;
 
         currentPhase = PHASE_NS;
-        xTaskNotifyStateClear(NULL);
+        osThreadFlagsClear(IRQ_FLAG);
 
         bool ped = (osEventFlagsGet(pedFlags) & PED_FLAG) != 0;
-        uint32_t greenMs;
-        if (ped) {
-            greenMs = T_GREEN_MS / 2;
-        } else if (vehiclesS > PRIORITY_THRESHOLD || vehiclesN > PRIORITY_THRESHOLD) {
-            greenMs = T_GREEN_EXTENSION_MS;
-        } else {
-            greenMs = T_GREEN_MS;
-        }
+        uint32_t greenMs = ped ? (T_GREEN_MS / 2)
+                               : ((vehiclesS > PRIORITY_THRESHOLD || vehiclesN > PRIORITY_THRESHOLD)
+                                  ? T_GREEN_EXTENSION_MS
+                                  : T_GREEN_MS);
         uint32_t yellowMs = ped ? (T_YELLOW_MS / 2) : T_YELLOW_MS;
-        TickType_t greenTicks  = pdMS_TO_TICKS(greenMs);
-        TickType_t yellowTicks = pdMS_TO_TICKS(yellowMs);
 
         if (ped) {
             printf("%4lus | NS       | S=%2lu N=%2lu | VERDE(PRIO)\r\n", sec, vehiclesS, vehiclesN);
@@ -190,23 +180,23 @@ void NSTask(void *argument)
         } else {
             printf("%4lus | NS       | S=%2lu N=%2lu | VERDE\r\n", sec, vehiclesS, vehiclesN);
         }
+
         TL_SetState(&tlSouth, TL_GREEN);
         TL_SetState(&tlNorth, TL_GREEN);
         TL_SetState(&tlEast,   TL_RED);
 
-        uint32_t notified = 0;
-        xTaskNotifyWait(0xFFFFFFFF, 0, &notified, greenTicks);
-        if (notified) {
+        uint32_t flags = osThreadFlagsWait(IRQ_FLAG, osFlagsWaitAny, greenMs);
+        if (flags & IRQ_FLAG) {
             sec = osKernelGetTickCount() / 1000;
             printf("%4lus | NS       | S=%2lu N=%2lu | GIALLO(INT)\r\n", sec, vehiclesS, vehiclesN);
             TL_SetState(&tlSouth, TL_YELLOW);
             TL_SetState(&tlNorth, TL_YELLOW);
-            vTaskDelay(yellowTicks);
+            osDelay(yellowMs);
             sec = osKernelGetTickCount() / 1000;
             printf("%4lus | NS       | S=%2lu N=%2lu | ROSSO\r\n", sec, vehiclesS, vehiclesN);
             TL_SetState(&tlSouth, TL_RED);
             TL_SetState(&tlNorth, TL_RED);
-            xSemaphoreGive(semPed);
+            osSemaphoreRelease(semPed);
             continue;
         }
 
@@ -214,13 +204,13 @@ void NSTask(void *argument)
         printf("%4lus | NS       | S=%2lu N=%2lu | GIALLO\r\n", sec, vehiclesS, vehiclesN);
         TL_SetState(&tlSouth, TL_YELLOW);
         TL_SetState(&tlNorth, TL_YELLOW);
-        vTaskDelay(yellowTicks);
+        osDelay(yellowMs);
         sec = osKernelGetTickCount() / 1000;
         printf("%4lus | NS       | S=%2lu N=%2lu | ROSSO\r\n", sec, vehiclesS, vehiclesN);
         TL_SetState(&tlSouth, TL_RED);
         TL_SetState(&tlNorth, TL_RED);
-        xSemaphoreGive(semEst);
-        xSemaphoreGive(semEst);
+        osSemaphoreRelease(semEst);
+        osSemaphoreRelease(semEst);
     }
 }
 
@@ -232,27 +222,21 @@ void EstTask(void *argument)
     uint32_t vehiclesE, sec;
     for (;;)
     {
-        xSemaphoreTake(semEst, portMAX_DELAY);
-        xSemaphoreTake(semEst, portMAX_DELAY);
+        osSemaphoreAcquire(semEst, osWaitForever);
+        osSemaphoreAcquire(semEst, osWaitForever);
 
         vehiclesE = (rand() % MAX_VEHICLES) + 1;
         sec = osKernelGetTickCount() / 1000;
 
         currentPhase = PHASE_EST;
-        xTaskNotifyStateClear(NULL);
+        osThreadFlagsClear(IRQ_FLAG);
 
         bool ped = (osEventFlagsGet(pedFlags) & PED_FLAG) != 0;
-        uint32_t greenMs;
-        if (ped) {
-            greenMs = T_GREEN_MS / 2;
-        } else if (vehiclesE > PRIORITY_THRESHOLD) {
-            greenMs = T_GREEN_EXTENSION_MS;
-        } else {
-            greenMs = T_GREEN_MS;
-        }
+        uint32_t greenMs = ped ? (T_GREEN_MS / 2)
+                              : (vehiclesE > PRIORITY_THRESHOLD
+                                 ? T_GREEN_EXTENSION_MS
+                                 : T_GREEN_MS);
         uint32_t yellowMs = ped ? (T_YELLOW_MS / 2) : T_YELLOW_MS;
-        TickType_t greenTicks  = pdMS_TO_TICKS(greenMs);
-        TickType_t yellowTicks = pdMS_TO_TICKS(yellowMs);
 
         if (ped) {
             printf("%4lus | Est      |     %2lu | VERDE(PRIO)\r\n", sec, vehiclesE);
@@ -261,68 +245,65 @@ void EstTask(void *argument)
         } else {
             printf("%4lus | Est      |     %2lu | VERDE\r\n", sec, vehiclesE);
         }
+
         TL_SetState(&tlEast, TL_GREEN);
 
-        uint32_t notified = 0;
-        xTaskNotifyWait(0xFFFFFFFF, 0, &notified, greenTicks);
-        if (notified) {
+        uint32_t flags = osThreadFlagsWait(IRQ_FLAG, osFlagsWaitAny, greenMs);
+        if (flags & IRQ_FLAG) {
             sec = osKernelGetTickCount() / 1000;
             printf("%4lus | Est      |     %2lu | GIALLO(INT)\r\n", sec, vehiclesE);
             TL_SetState(&tlEast, TL_YELLOW);
-            vTaskDelay(yellowTicks);
+            osDelay(yellowMs);
             sec = osKernelGetTickCount() / 1000;
             printf("%4lus | Est      |     %2lu | ROSSO\r\n", sec, vehiclesE);
             TL_SetState(&tlEast, TL_RED);
-            xSemaphoreGive(semPed);
+            osSemaphoreRelease(semPed);
             continue;
         }
 
         sec = osKernelGetTickCount() / 1000;
         printf("%4lus | Est      |     %2lu | GIALLO\r\n", sec, vehiclesE);
         TL_SetState(&tlEast, TL_YELLOW);
-        vTaskDelay(yellowTicks);
+        osDelay(yellowMs);
         sec = osKernelGetTickCount() / 1000;
         printf("%4lus | Est      |     %2lu | ROSSO\r\n", sec, vehiclesE);
         TL_SetState(&tlEast, TL_RED);
-        xSemaphoreGive(semPed);
+        osSemaphoreRelease(semPed);
     }
 }
-
 
 /*============================================================================*/
 /*                                 PedTask                                     */
 /*============================================================================*/
 void PedTask(void *argument)
 {
-    TickType_t blinkInt = pdMS_TO_TICKS(T_PED_BLINK_INTERVAL_MS);
     for (;;)
     {
-        xSemaphoreTake(semPed, portMAX_DELAY);
+        osSemaphoreAcquire(semPed, osWaitForever);
 
-        printf("%4lus | Ped      |      -  | ON\r\n", osKernelGetTickCount()/1000);
+        uint32_t sec = osKernelGetTickCount() / 1000;
+        printf("%4lus | Ped      |      -  | ON\r\n", sec);
         PL_On(&plSouth);
         PL_On(&plEast);
-        vTaskDelay(pdMS_TO_TICKS(T_PED_TOTAL_MS - T_PED_BLINK_MS));
+        osDelay(T_PED_TOTAL_MS - T_PED_BLINK_MS);
 
-        printf("%4lus | Ped      |      -  | BLINK\r\n", osKernelGetTickCount()/1000);
-        for (uint32_t i = 0; i < T_PED_BLINK_MS/T_PED_BLINK_INTERVAL_MS; ++i) {
+        printf("%4lus | Ped      |      -  | BLINK\r\n", osKernelGetTickCount() / 1000);
+        for (uint32_t i = 0; i < T_PED_BLINK_MS / T_PED_BLINK_INTERVAL_MS; ++i) {
             PL_Toggle(&plSouth);
             PL_Toggle(&plEast);
-            vTaskDelay(blinkInt);
+            osDelay(T_PED_BLINK_INTERVAL_MS);
         }
 
         PL_Off(&plSouth);
         PL_Off(&plEast);
-        printf("%4lus | Ped      |      -  | OFF\r\n", osKernelGetTickCount()/1000);
+        printf("%4lus | Ped      |      -  | OFF\r\n", osKernelGetTickCount() / 1000);
 
         osEventFlagsClear(pedFlags, PED_FLAG);
-        xTaskNotifyStateClear(nsTaskHandle);
-        xTaskNotifyStateClear(estTaskHandle);
-
         currentPhase = PHASE_PED;
-        xSemaphoreGive(semNS);
+        osSemaphoreRelease(semNS);
     }
 }
+
 /**
   * @brief  System Clock Configuration
   */
