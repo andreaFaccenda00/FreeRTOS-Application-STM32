@@ -12,10 +12,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include "trafficlight.h"
 
 /* Defines -------------------------------------------------------------------*/
 #define MAX_VEHICLES            20U
-#define PRIORITY_THRESHOLD      17U
+#define PRIORITY_THRESHOLD      15U
 
 #define T_GREEN_MS              4000U
 #define T_YELLOW_MS             1500U
@@ -42,42 +43,50 @@
 #define E_GREEN_PIN     GPIO_PIN_6 // CN10 Pin 4
 #define E_PORT          GPIOC
 
-// Emergency GPIO (CN)
-#define EMERGENCY_LED_PORT GPIOB
-#define EMERGENCY_LED_PIN  GPIO_PIN_7
-#define PERIOD_EMERGENCY_MS       45000U
-#define LED_ON_EMERGENCY_MS       2000U
+// Pedestrian SUD (PB5 → CN9-5 / D4)
+#define S_PED_PIN       GPIO_PIN_5
+#define S_PED_PORT      GPIOB
 
-// Pedestrian LED (PB5 → CN9-5 / D4)
-#define P_LED_PIN       GPIO_PIN_5
-#define P_LED_PORT      GPIOB
+// Pedestrian EST (PB7 → CN7-21)
+#define E_PED_PORT GPIOB
+#define E_PED_PIN  GPIO_PIN_7
 
 /* Globals -------------------------------------------------------------------*/
+static const TrafficLight_t tlSouth = { S_PORT, S_RED_PIN,    S_YELLOW_PIN,   S_GREEN_PIN   };
+static const TrafficLight_t tlNorth = { N_PORT, N_RED_PIN,    N_YELLOW_PIN,   N_GREEN_PIN   };
+static const TrafficLight_t tlEast  = { E_PORT, E_RED_PIN,    E_YELLOW_PIN,   E_GREEN_PIN   };
+static const PedLight_t plSouth = { S_PED_PORT, S_PED_PIN };
+static const PedLight_t plEast  = { E_PED_PORT, E_PED_PIN  };
+
+static const TrafficLight_t allLights[] = {
+  { S_PORT, S_RED_PIN,    S_YELLOW_PIN,   S_GREEN_PIN   },
+  { N_PORT, N_RED_PIN,    N_YELLOW_PIN,   N_GREEN_PIN   },
+  { E_PORT, E_RED_PIN,    E_YELLOW_PIN,   E_GREEN_PIN   },
+};
+
 COM_InitTypeDef BspCOMInit;
 SemaphoreHandle_t semNS;      // South+North phase
 SemaphoreHandle_t semEst;     // East
-static volatile bool pedPriority = false;
+SemaphoreHandle_t semPed;  // Pedestrian
+#define PED_FLAG    (1U << 0)
 
+/* Handle degli Event Flags */
+static osEventFlagsId_t pedFlags;
 /* Task handles */
 osThreadId_t nsTaskHandle;
 osThreadId_t estTaskHandle;
+osThreadId_t pedTaskHandle;
 
 const osThreadAttr_t nsTask_attributes = { .name = "NSTask", .priority = osPriorityAboveNormal, .stack_size = 128*4 };
 const osThreadAttr_t estTask_attributes = { .name = "EstTask", .priority = osPriorityAboveNormal, .stack_size = 128*4 };
-/* Emergency task handle e attributi
-osThreadId_t emergencyTaskHandle;
-const osThreadAttr_t emergencyTask_attributes = {
-    .name       = "EmergencyLED",
-    .priority   = osPriorityRealtime,  // la più alta
-    .stack_size = 128*4
-};  */
+const osThreadAttr_t pedTaskAttr = {.name = "PedTask", .priority = osPriorityAboveNormal + 1, .stack_size = 128*4 };
 
 /* Prototypes ----------------------------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 void NSTask(void *argument);
 void EstTask(void *argument);
-//void EmergencyTask(void *argument);
+void PedTask(void *argument);
 void Error_Handler(void);
 #ifdef USE_FULL_ASSERT
 void assert_failed(uint8_t* file, uint32_t line);
@@ -92,10 +101,16 @@ int main(void)
     srand(HAL_GetTick());
     osKernelInitialize();
 
+    pedFlags = osEventFlagsNew(NULL);
+    if (pedFlags == NULL) {
+        Error_Handler();
+    }
     // Semaphores
     semNS  = xSemaphoreCreateBinary();
     semEst = xSemaphoreCreateCounting(2,0);
-    if (!semNS || !semEst) Error_Handler();
+    semPed = xSemaphoreCreateBinary();
+    if (!semNS || !semEst || !semPed) Error_Handler();
+
 
     // Release initial NS phase
     xSemaphoreGive(semNS);
@@ -111,11 +126,7 @@ int main(void)
     // Create tasks
     nsTaskHandle  = osThreadNew(NSTask,  NULL, &nsTask_attributes);
     estTaskHandle = osThreadNew(EstTask, NULL, &estTask_attributes);
-    /* emergencyTaskHandle = osThreadNew(
-        EmergencyTask,
-        NULL,
-        &emergencyTask_attributes
-    ); */
+    pedTaskHandle = osThreadNew(PedTask, NULL, &pedTaskAttr);
 
     osKernelStart();
     while(1);
@@ -128,6 +139,7 @@ void NSTask(void *argument)
     {
         // 1) attendo il via
         xSemaphoreTake(semNS, portMAX_DELAY);
+        TickType_t lastWake = xTaskGetTickCount();
 
         // 2) conto i veicoli
         vehiclesS = (rand() % MAX_VEHICLES) + 1;
@@ -135,7 +147,8 @@ void NSTask(void *argument)
         uint32_t sec = osKernelGetTickCount() / 1000;
 
         // 3) calcolo durate (verde/giallo dimezzati in pedPriority)
-        bool ped = pedPriority;
+        bool ped = (osEventFlagsGet(pedFlags) & PED_FLAG) != 0;
+
         uint32_t greenDur  = ped
                               ? (T_GREEN_MS  / 2)
                               : ((vehiclesS > PRIORITY_THRESHOLD || vehiclesN > PRIORITY_THRESHOLD)
@@ -157,31 +170,29 @@ void NSTask(void *argument)
                    sec, vehiclesS, vehiclesN);
         }
 
-        // 5) fase VERDE
-        HAL_GPIO_WritePin(S_PORT, S_GREEN_PIN, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(N_PORT, N_GREEN_PIN, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(S_PORT, S_RED_PIN|S_YELLOW_PIN, GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(N_PORT, N_RED_PIN|N_YELLOW_PIN, GPIO_PIN_RESET);
-        xTaskNotifyWait(0, 0, NULL, pdMS_TO_TICKS(greenDur));
+        // 5) fase VERDE NS + EST ROSSO
+        TL_SetState(&tlSouth, TL_GREEN);
+        TL_SetState(&tlNorth, TL_GREEN);
+        TL_SetState(&tlEast,   TL_RED);
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(greenDur));
 
         // 6) fase GIALLO
         sec = osKernelGetTickCount() / 1000;
         printf("%4lus | NS       | S=%2lu N=%2lu | GIALLO\r\n",
                sec, vehiclesS, vehiclesN);
-        HAL_GPIO_WritePin(S_PORT, S_YELLOW_PIN, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(N_PORT, N_YELLOW_PIN, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(S_PORT, S_RED_PIN|S_GREEN_PIN, GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(N_PORT, N_RED_PIN|N_GREEN_PIN, GPIO_PIN_RESET);
-        xTaskNotifyWait(0, 0, NULL, pdMS_TO_TICKS(yellowDur));
+
+        TL_SetState(&tlSouth, TL_YELLOW);
+        TL_SetState(&tlNorth, TL_YELLOW);
+        TL_SetState(&tlEast,   TL_RED);
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(yellowDur));
+
 
         // 7) fase ROSSO + rilascio Est
         sec = osKernelGetTickCount() / 1000;
         printf("%4lus | NS       | S=%2lu N=%2lu | ROSSO\r\n",
                sec, vehiclesS, vehiclesN);
-        HAL_GPIO_WritePin(S_PORT, S_RED_PIN, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(N_PORT, N_RED_PIN, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(S_PORT, S_YELLOW_PIN|S_GREEN_PIN, GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(N_PORT, N_YELLOW_PIN|N_GREEN_PIN, GPIO_PIN_RESET);
+        TL_SetState(&tlSouth, TL_RED);
+        TL_SetState(&tlNorth, TL_RED);
 
         xSemaphoreGive(semEst);
         xSemaphoreGive(semEst);
@@ -196,13 +207,15 @@ void EstTask(void *argument)
         // 1) aspetto i due semafori
         xSemaphoreTake(semEst, portMAX_DELAY);
         xSemaphoreTake(semEst, portMAX_DELAY);
+        TickType_t lastWake = xTaskGetTickCount();
 
         // 2) conto veicoli Est
         vehiclesE = (rand() % MAX_VEHICLES) + 1;
         uint32_t sec = osKernelGetTickCount() / 1000;
 
         // 3) calcolo durate
-        bool ped = pedPriority;
+        bool ped = (osEventFlagsGet(pedFlags) & PED_FLAG) != 0;
+
         uint32_t greenDur  = ped
                               ? (T_GREEN_MS  / 2)
                               : (vehiclesE > PRIORITY_THRESHOLD
@@ -225,65 +238,76 @@ void EstTask(void *argument)
         }
 
         // 5) fase VERDE Est
-        HAL_GPIO_WritePin(E_PORT, E_GREEN_PIN, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(E_PORT, E_RED_PIN|E_YELLOW_PIN, GPIO_PIN_RESET);
-        xTaskNotifyWait(0, 0, NULL, pdMS_TO_TICKS(greenDur));
+        TL_SetState(&tlEast,  TL_GREEN);
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(greenDur));
 
         // 6) fase GIALLO Est
         sec = osKernelGetTickCount() / 1000;
         printf("%4lus | Est      |     %2lu | GIALLO\r\n",
                sec, vehiclesE);
-        HAL_GPIO_WritePin(E_PORT, E_YELLOW_PIN, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(E_PORT, E_RED_PIN|E_GREEN_PIN, GPIO_PIN_RESET);
-        xTaskNotifyWait(0, 0, NULL, pdMS_TO_TICKS(yellowDur));
+        TL_SetState(&tlEast,  TL_YELLOW);
+        vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(yellowDur));
 
         // 7) fase ROSSO Est
         sec = osKernelGetTickCount() / 1000;
         printf("%4lus | Est      |     %2lu | ROSSO\r\n",
                sec, vehiclesE);
-        HAL_GPIO_WritePin(E_PORT, E_RED_PIN, GPIO_PIN_SET);
-        HAL_GPIO_WritePin(E_PORT, E_YELLOW_PIN|E_GREEN_PIN, GPIO_PIN_RESET);
-
-        // 8) attraversamento pedonale
-        sec = osKernelGetTickCount() / 1000;
-        printf("%4lus | Ped      |      -  | ON\r\n", sec);
-        HAL_GPIO_WritePin(P_LED_PORT, P_LED_PIN, GPIO_PIN_SET);
-        osDelay(T_PED_TOTAL_MS - T_PED_BLINK_MS);
-
-        sec = osKernelGetTickCount() / 1000;
-        printf("%4lus | Ped      |      -  | BLINK\r\n", sec);
-        for (uint32_t i = 0; i < (T_PED_BLINK_MS / T_PED_BLINK_INTERVAL_MS); ++i) {
-            HAL_GPIO_TogglePin(P_LED_PORT, P_LED_PIN);
-            osDelay(T_PED_BLINK_INTERVAL_MS);
-        }
-        HAL_GPIO_WritePin(P_LED_PORT, P_LED_PIN, GPIO_PIN_RESET);
-
-        sec = osKernelGetTickCount() / 1000;
-        printf("%4lus | Ped      |      -  | OFF\r\n", sec);
-
-        // 9) fine priorità pedonale, riavvia NS
-        pedPriority = false;
-        xSemaphoreGive(semNS);
+        TL_SetState(&tlEast,  TL_RED);
+        xSemaphoreGive(semPed);
     }
 }
 
-//void EmergencyTask(void *argument){}
+void PedTask(void *argument)
+{
+  TickType_t blinkInterval = pdMS_TO_TICKS(T_PED_BLINK_INTERVAL_MS);
+  for (;;)
+  {
+    // 1) aspetto il via
+    xSemaphoreTake(semPed, portMAX_DELAY);
+
+    // 2) accendo pedonale
+    printf("%4lus | Ped      |      -  | ON\r\n",
+           osKernelGetTickCount()/1000);
+    PL_On(&plSouth);
+    PL_On(&plEast);
+    vTaskDelay(pdMS_TO_TICKS(T_PED_TOTAL_MS - T_PED_BLINK_MS));
+
+    // 3) lampeggio
+    printf("%4lus | Ped      |      -  | BLINK\r\n",
+           osKernelGetTickCount()/1000);
+    uint32_t cycles = T_PED_BLINK_MS / T_PED_BLINK_INTERVAL_MS;
+    for (uint32_t i = 0; i < cycles; ++i) {
+      PL_Toggle(&plSouth);
+      PL_Toggle(&plEast);
+      vTaskDelay(blinkInterval);
+    }
+
+    // 4) spengo
+    PL_Off(&plSouth);
+    PL_Off(&plEast);
+    printf("%4lus | Ped      |      -  | OFF\r\n",
+           osKernelGetTickCount()/1000);
+
+    // 5) fine priorità pedonale, pulisco il flag e rilascio NS
+    osEventFlagsClear(pedFlags, PED_FLAG);
+    xSemaphoreGive(semNS);
+  }
+}
+
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-  if (GPIO_Pin == GPIO_PIN_13)
-  {
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    pedPriority = true;   // attiva la modalità priorità pedonale
-    // Notifica entrambi i task in esecuzione per svegliarli istantaneamente
-    vTaskNotifyGiveFromISR(nsTaskHandle,  &xHigherPriorityTaskWoken);
-    vTaskNotifyGiveFromISR(estTaskHandle, &xHigherPriorityTaskWoken);
-    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-    printf("%4lus | %-6s |      -   | PED_PRIO\r\n",
-           osKernelGetTickCount()/1000,
-           "Button");
-  }
+    if (GPIO_Pin == GPIO_PIN_13)
+    {
+        // Setta PED_FLAG (non blocca)
+        osEventFlagsSet(pedFlags, PED_FLAG);
+
+        // Log
+        printf("%4lus | Button  |      -   | PED_PRIO\r\n",
+               osKernelGetTickCount()/1000);
+    }
 }
+
 
 /**
   * @brief  System Clock Configuration
@@ -325,55 +349,55 @@ static void MX_GPIO_Init(void)
   GPIO_InitTypeDef GPIO_InitStruct = {0};
 
   /* Enable GPIO clocks */
-  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
 
-  /* Reset all outputs */
-  HAL_GPIO_WritePin(S_PORT, S_RED_PIN|S_YELLOW_PIN|S_GREEN_PIN, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(P_LED_PORT, P_LED_PIN, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(E_PORT, E_RED_PIN|E_YELLOW_PIN|E_GREEN_PIN, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(N_PORT,  N_RED_PIN|N_YELLOW_PIN|N_GREEN_PIN, GPIO_PIN_RESET);
-
-  /* Semaforo 1 (PA0, PA1, PA4) */
-  GPIO_InitStruct.Pin   = S_RED_PIN|S_YELLOW_PIN|S_GREEN_PIN;
+  /* Semafori (tutti i pin già configurati come RESET) */
   GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull  = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+
+  // South: PA0, PA1, PA4
+  GPIO_InitStruct.Pin = S_RED_PIN | S_YELLOW_PIN | S_GREEN_PIN;
   HAL_GPIO_Init(S_PORT, &GPIO_InitStruct);
 
-  /* LED pedonale (PB5) */
-  GPIO_InitStruct.Pin = P_LED_PIN;
-  HAL_GPIO_Init(P_LED_PORT, &GPIO_InitStruct);
-
-  /* Semaforo 2 (PC6, PC8, PC9) */
-  GPIO_InitStruct.Pin = E_RED_PIN|E_YELLOW_PIN|E_GREEN_PIN;
-  HAL_GPIO_Init(E_PORT, &GPIO_InitStruct);
-
-  /* Semaforo 3 (PC10, PC11, PC12) */
-  GPIO_InitStruct.Pin = N_RED_PIN|N_YELLOW_PIN|N_GREEN_PIN;
+  // North: PC10, PC11, PC12
+  GPIO_InitStruct.Pin = N_RED_PIN | N_YELLOW_PIN | N_GREEN_PIN;
   HAL_GPIO_Init(N_PORT, &GPIO_InitStruct);
 
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-  GPIO_InitStruct.Pin   = EMERGENCY_LED_PIN;
-  GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull  = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(EMERGENCY_LED_PORT, &GPIO_InitStruct);
-  HAL_GPIO_WritePin(EMERGENCY_LED_PORT, EMERGENCY_LED_PIN, GPIO_PIN_RESET);
+  // East: PC6, PC8, PC9
+  GPIO_InitStruct.Pin = E_RED_PIN | E_YELLOW_PIN | E_GREEN_PIN;
+  HAL_GPIO_Init(E_PORT, &GPIO_InitStruct);
+
+  /* Pedonali */
+  // South ped: PB5
+  GPIO_InitStruct.Pin = S_PED_PIN;
+  HAL_GPIO_Init(S_PED_PORT, &GPIO_InitStruct);
+  // East ped:  PB7
+  GPIO_InitStruct.Pin = E_PED_PIN;
+  HAL_GPIO_Init(E_PED_PORT, &GPIO_InitStruct);
+
+  /* Ora che tutti i pin sono configurati, inizializzo gli stati */
+  // Reset di tutti i semafori
+  for (size_t i = 0; i < sizeof(allLights)/sizeof(allLights[0]); ++i) {
+    TL_Init(&allLights[i]);
+    PL_Init(&plSouth);
+    PL_Init(&plEast);
+  }
+  // Reset dei LED pedonali
+  HAL_GPIO_WritePin(S_PED_PORT, S_PED_PIN, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(E_PED_PORT, E_PED_PIN, GPIO_PIN_RESET);
 
   /* Button USER PC13 in EXTI mode */
-  __HAL_RCC_GPIOC_CLK_ENABLE();              // già presente
   GPIO_InitStruct.Pin  = GPIO_PIN_13;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING; // il pulsante tira PC13 a GND
-  GPIO_InitStruct.Pull = GPIO_NOPULL;          // o PULLUP se preferisci
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
 
   /* NVIC for EXTI line[15:10] */
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
-
 }
 
 /**
