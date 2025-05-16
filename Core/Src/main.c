@@ -19,6 +19,7 @@
 #include "app_config.h"
 #include "pinout.h"
 #include "FreeRTOS.h"
+#include "virtual_time.h"
 
 /*============================================================================*/
 /*                                  GLOBAL                                    */
@@ -89,10 +90,12 @@ int main(void)
         __HAL_RCC_CLEAR_RESET_FLAGS();
         printf("*** Reset causato da IWDG ***\r\n");
     }
-    MX_IWDG_Init(); 	// ← inizializza il watchdog
+    MX_IWDG_Init(); 	/* ← inizialize watchdog */
 
     srand(HAL_GetTick());
     osKernelInitialize();
+
+    InitVirtualTime(10000U); /* ← inizialize virtual clock to attive night mode */
 
     pedFlags = osEventFlagsNew(NULL);
     if (pedFlags == NULL) {
@@ -155,6 +158,7 @@ void NSTask(void *argument)
         vehiclesS = (rand() % MAX_VEHICLES) + 1;
         vehiclesN = (rand() % MAX_VEHICLES) + 1;
 
+        printf("Orario virtuale: %02lu:00\n", (unsigned long)GetVirtualHour());
 
         currentPhase = PHASE_NS;
         osThreadFlagsClear(IRQ_FLAG);
@@ -297,7 +301,7 @@ void PedTask(void *argument)
 }
 
 /*============================================================================*/
-/*                                 SYSTEMCLOCK_Config                         */
+/*                                 SystemClock_Config                         */
 /*============================================================================*/
 void SystemClock_Config(void)
 {

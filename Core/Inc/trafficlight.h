@@ -1,11 +1,9 @@
-// trafficlight.h (estendi il file)
 #ifndef TRAFFIC_LIGHT_H
 #define TRAFFIC_LIGHT_H
 
 #include "main.h"
 
-// --- semafori veicolari ---
-typedef enum { TL_RED, TL_YELLOW, TL_GREEN } TL_State_t;
+typedef enum { TL_RED, TL_YELLOW, TL_GREEN, TL_OFF } TL_State_t;
 
 typedef struct {
   GPIO_TypeDef* port;
@@ -17,7 +15,6 @@ typedef struct {
 void TL_Init(const TrafficLight_t* tl);
 void TL_SetState(const TrafficLight_t* tl, TL_State_t state);
 
-// --- luci pedonali (on/off/blink) ---
 typedef struct {
   GPIO_TypeDef* port;
   uint16_t      pin;

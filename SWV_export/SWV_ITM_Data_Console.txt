@@ -1,28 +1,11 @@
 SWV ITM Data Console - ITM Port: 0
    0s | NS | S= 1 N=14 | VERDE
-   4s | NS | S= 1 N=14 | GIALLO
-   5s | NS | S= 1 N=14 | ROSSO
-   6s | Est | S= 0 N= 0 | VERDE
-  10s | Est | S= 0 N= 0 | GIALLO
-  12s | Est | S= 0 N= 0 | ROSSO
-  13s | Ped | S= 0 N= 0 | ON
-  17s | Ped | S= 0 N= 0 | BLINK
-  18s | Ped | S= 0 N= 0 | OFF
-  19s | NS | S= 3 N=10 | VERDE
-  23s | NS | S= 3 N=10 | GIALLO
-  24s | NS | S= 3 N=10 | ROSSO
-  25s | Est | S= 0 N= 0 | VERDE
-  29s | Est | S= 0 N= 0 | GIALLO
-  31s | Est | S= 0 N= 0 | ROSSO
-  32s | Ped | S= 0 N= 0 | ON
-*** Reset causato da IWDG ***
-   0s | NS | S= 1 N=14 | VERDE
-   4s | NS | S= 1 N=14 | GIALLO
-   5s | NS | S= 1 N=14 | ROSSO
-   6s | Est | S= 0 N= 0 | VERDE
-  10s | Est | S= 0 N= 0 | GIALLO
-  12s | Est | S= 0 N= 0 | ROSSO
-  13s | Ped | S= 0 N= 0 | ON
-  17s | Ped | S= 0 N= 0 | BLINK
-  18s | Ped | S= 0 N= 0 | OFF
-  19s | NS | S= 3 N=10 | VERDE
+4000s | NS | S= 1 N=14 | GIALLO
+5500s | NS | S= 1 N=14 | ROSSO
+6500s | Est | S= 0 N= 0 | VERDE
+10500s | Est | S= 0 N= 0 | GIALLO
+12000s | Est | S= 0 N= 0 | ROSSO
+13000s | Ped | S= 0 N= 0 | ON
+17000s | Ped | S= 0 N= 0 | BLINK
+18000s | Ped | S= 0 N= 0 | OFF
+19000s | NS | S= 3 N=10 | VERDE

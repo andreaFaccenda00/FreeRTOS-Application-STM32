@@ -1,8 +1,9 @@
+// trafficlight.c
 #include "trafficlight.h"
-#include "stm32g4xx_hal.h"  // Assicurati che corrisponda alla tua serie STM32
+#include "stm32g4xx_hal.h"  // o stm32g4xx_hal_gpio.h
 
 /**
- * @brief  Inizializza i pin di un semaforo veicolare (rossi, gialli, verdi) in OFF
+ * @brief  Inizializza i pin di un semaforo veicolare (tutti OFF)
  */
 void TL_Init(const TrafficLight_t* tl) {
     HAL_GPIO_WritePin(tl->port,
@@ -14,13 +15,32 @@ void TL_Init(const TrafficLight_t* tl) {
  * @brief  Imposta lo stato di un semaforo veicolare
  */
 void TL_SetState(const TrafficLight_t* tl, TL_State_t state) {
-    HAL_GPIO_WritePin(tl->port, tl->pin_red,    (state == TL_RED)    ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(tl->port, tl->pin_yellow, (state == TL_YELLOW) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(tl->port, tl->pin_green,  (state == TL_GREEN)  ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    switch (state) {
+        case TL_RED:
+            HAL_GPIO_WritePin(tl->port, tl->pin_red,    GPIO_PIN_SET);
+            HAL_GPIO_WritePin(tl->port, tl->pin_yellow, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(tl->port, tl->pin_green,  GPIO_PIN_RESET);
+            break;
+        case TL_YELLOW:
+            HAL_GPIO_WritePin(tl->port, tl->pin_red,    GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(tl->port, tl->pin_yellow, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(tl->port, tl->pin_green,  GPIO_PIN_RESET);
+            break;
+        case TL_GREEN:
+            HAL_GPIO_WritePin(tl->port, tl->pin_red,    GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(tl->port, tl->pin_yellow, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(tl->port, tl->pin_green,  GPIO_PIN_SET);
+            break;
+        case TL_OFF:  // spegne tutte le luci
+            HAL_GPIO_WritePin(tl->port,
+                              tl->pin_red | tl->pin_yellow | tl->pin_green,
+                              GPIO_PIN_RESET);
+            break;
+    }
 }
 
 /**
- * @brief  Inizializza il LED pedonale in OFF
+ * @brief  Inizializza il LED pedonale (OFF)
  */
 void PL_Init(const PedLight_t* pl) {
     HAL_GPIO_WritePin(pl->port, pl->pin, GPIO_PIN_RESET);
