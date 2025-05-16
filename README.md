@@ -76,8 +76,8 @@ The application uses a **cyclic task schedule** driven by semaphores, with real-
 
 ## ⏱️ Timing Configuration
 
-| Phase                | Duration (ms) |
-|----------------------|---------------|
+| Phase                 | Duration (ms) |
+|-----------------------|---------------|
 | 🟢 Green Light        | 4000          |
 | 🟡 Yellow Light       | 1500          |
 | 🟢 Extended Green     | 6000          |

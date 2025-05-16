@@ -14,58 +14,44 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include "trafficlight.h"
+#include "iwdg.h"
+#include "logger.h"
+#include "app_config.h"
+#include "pinout.h"
+#include "FreeRTOS.h"
 
-/* Defines -------------------------------------------------------------------*/
-#define MAX_VEHICLES            20U
-#define PRIORITY_THRESHOLD      15U
+/*============================================================================*/
+/*                                  GLOBAL                                    */
+/*============================================================================*/
+static const TrafficLight_t tlSouth = {
+    .port       = TL_SOUTH_RED.port,
+    .pin_red    = TL_SOUTH_RED.pin,
+    .pin_yellow = TL_SOUTH_YELLOW.pin,
+    .pin_green  = TL_SOUTH_GREEN.pin
+};
 
-#define T_GREEN_MS              4000U
-#define T_YELLOW_MS             1500U
-#define T_GREEN_EXTENSION_MS    (T_GREEN_MS * 3/2)
-#define T_PED_TOTAL_MS          5000U
-#define T_PED_BLINK_MS          1000U
-#define T_PED_BLINK_INTERVAL_MS 250U
+static const TrafficLight_t tlNorth = {
+    .port       = TL_NORTH_RED.port,
+    .pin_red    = TL_NORTH_RED.pin,
+    .pin_yellow = TL_NORTH_YELLOW.pin,
+    .pin_green  = TL_NORTH_GREEN.pin
+};
 
-#define PED_FLAG    (1U << 0)
-#define IRQ_FLAG    (1U << 0)
+static const TrafficLight_t tlEast = {
+    .port       = TL_EAST_RED.port,
+    .pin_red    = TL_EAST_RED.pin,
+    .pin_yellow = TL_EAST_YELLOW.pin,
+    .pin_green  = TL_EAST_GREEN.pin
+};
 
-/* South GPIO (CN8) */
-#define S_RED_PIN       GPIO_PIN_0
-#define S_YELLOW_PIN    GPIO_PIN_1
-#define S_GREEN_PIN     GPIO_PIN_4
-#define S_PORT          GPIOA
+static const PedLight_t plSouth = {
+    .port = PED_SOUTH.port,
+    .pin  = PED_SOUTH.pin
+};
 
-// North GPIO (CN7)
-#define N_RED_PIN       GPIO_PIN_10 // CN7 Pin 1
-#define N_YELLOW_PIN    GPIO_PIN_11 // CN7 Pin 2
-#define N_GREEN_PIN     GPIO_PIN_12 // CN7 Pin 3
-#define N_PORT          GPIOC
-
-// East GPIO
-#define E_RED_PIN       GPIO_PIN_9 // CN10 Pin 1
-#define E_YELLOW_PIN    GPIO_PIN_8 // CN10 Pin 2
-#define E_GREEN_PIN     GPIO_PIN_6 // CN10 Pin 4
-#define E_PORT          GPIOC
-
-/* Pedestrian South (PB5 → CN9-5 / D4) */
-#define S_PED_PIN       GPIO_PIN_5
-#define S_PED_PORT      GPIOB
-
-/* Pedestrian East (PB7 → CN7-21) */
-#define E_PED_PIN       GPIO_PIN_7
-#define E_PED_PORT      GPIOB
-
-/* Globals -------------------------------------------------------------------*/
-static const TrafficLight_t tlSouth = { S_PORT, S_RED_PIN,    S_YELLOW_PIN,   S_GREEN_PIN   };
-static const TrafficLight_t tlNorth = { N_PORT, N_RED_PIN,    N_YELLOW_PIN,   N_GREEN_PIN   };
-static const TrafficLight_t tlEast  = { E_PORT, E_RED_PIN,    E_YELLOW_PIN,   E_GREEN_PIN   };
-static const PedLight_t plSouth    = { S_PED_PORT, S_PED_PIN };
-static const PedLight_t plEast     = { E_PED_PORT, E_PED_PIN  };
-
-static const TrafficLight_t allLights[] = {
-    { S_PORT, S_RED_PIN,    S_YELLOW_PIN,   S_GREEN_PIN   },
-    { N_PORT, N_RED_PIN,    N_YELLOW_PIN,   N_GREEN_PIN   },
-    { E_PORT, E_RED_PIN,    E_YELLOW_PIN,   E_GREEN_PIN   },
+static const PedLight_t plEast = {
+    .port = PED_EAST.port,
+    .pin  = PED_EAST.pin
 };
 
 COM_InitTypeDef       BspCOMInit;
@@ -80,7 +66,9 @@ const osThreadAttr_t nsTask_attributes  = { .name = "NSTask",  .priority = osPri
 const osThreadAttr_t estTask_attributes = { .name = "EstTask", .priority = osPriorityAboveNormal,    .stack_size = 128*4 };
 const osThreadAttr_t pedTaskAttr        = { .name = "PedTask", .priority = osPriorityAboveNormal1,  .stack_size = 128*4 };
 
-/* Prototypes ----------------------------------------------------------------*/
+/*============================================================================*/
+/*                                  PROTOTYPES                                */
+/*============================================================================*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 void NSTask(void *argument);
@@ -96,6 +84,12 @@ int main(void)
     HAL_Init();
     SystemClock_Config();
     MX_GPIO_Init();
+
+    if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) {
+        __HAL_RCC_CLEAR_RESET_FLAGS();
+        printf("*** Reset causato da IWDG ***\r\n");
+    }
+    MX_IWDG_Init(); 	// ← inizializza il watchdog
 
     srand(HAL_GetTick());
     osKernelInitialize();
@@ -144,24 +138,23 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
             osThreadFlagsSet(estTaskHandle, IRQ_FLAG);
         }
 
-        uint32_t sec = osKernelGetTickCount()/1000;
-        printf("%4lus | Button   |      -    | PED_PRIO\r\n", sec);
+        LogEvent("Button", "PED_PRIO", 0, 0, 0);
     }
 }
 
 /*============================================================================*/
-/*                                 NSTask                                      */
+/*                                 NSTask                                     */
 /*============================================================================*/
 void NSTask(void *argument)
 {
-    uint32_t vehiclesS, vehiclesN, sec;
+    uint32_t vehiclesS, vehiclesN;
     for (;;)
     {
         osSemaphoreAcquire(semNS, osWaitForever);
 
         vehiclesS = (rand() % MAX_VEHICLES) + 1;
         vehiclesN = (rand() % MAX_VEHICLES) + 1;
-        sec = osKernelGetTickCount() / 1000;
+
 
         currentPhase = PHASE_NS;
         osThreadFlagsClear(IRQ_FLAG);
@@ -174,11 +167,11 @@ void NSTask(void *argument)
         uint32_t yellowMs = ped ? (T_YELLOW_MS / 2) : T_YELLOW_MS;
 
         if (ped) {
-            printf("%4lus | NS       | S=%2lu N=%2lu | VERDE(PRIO)\r\n", sec, vehiclesS, vehiclesN);
+            LogEvent("NS", "VERDE(PRIO)", vehiclesS, vehiclesN, 0);
         } else if (greenMs > T_GREEN_MS) {
-            printf("%4lus | NS       | S=%2lu N=%2lu | EXTEND\r\n", sec, vehiclesS, vehiclesN);
+            LogEvent("NS", "EXTEND", vehiclesS, vehiclesN, 0);
         } else {
-            printf("%4lus | NS       | S=%2lu N=%2lu | VERDE\r\n", sec, vehiclesS, vehiclesN);
+            LogEvent("NS", "VERDE", vehiclesS, vehiclesN, 0);
         }
 
         TL_SetState(&tlSouth, TL_GREEN);
@@ -187,46 +180,44 @@ void NSTask(void *argument)
 
         uint32_t flags = osThreadFlagsWait(IRQ_FLAG, osFlagsWaitAny, greenMs);
         if (flags & IRQ_FLAG) {
-            sec = osKernelGetTickCount() / 1000;
-            printf("%4lus | NS       | S=%2lu N=%2lu | GIALLO(INT)\r\n", sec, vehiclesS, vehiclesN);
+            LogEvent("NS", "GIALLO",vehiclesS, vehiclesN, 0);
             TL_SetState(&tlSouth, TL_YELLOW);
             TL_SetState(&tlNorth, TL_YELLOW);
             osDelay(yellowMs);
-            sec = osKernelGetTickCount() / 1000;
-            printf("%4lus | NS       | S=%2lu N=%2lu | ROSSO\r\n", sec, vehiclesS, vehiclesN);
+            LogEvent("NS", "ROSSO", vehiclesS, vehiclesN, 0);
             TL_SetState(&tlSouth, TL_RED);
             TL_SetState(&tlNorth, TL_RED);
             osSemaphoreRelease(semPed);
             continue;
         }
 
-        sec = osKernelGetTickCount() / 1000;
-        printf("%4lus | NS       | S=%2lu N=%2lu | GIALLO\r\n", sec, vehiclesS, vehiclesN);
+        LogEvent("NS", "GIALLO", vehiclesS, vehiclesN, 0);
         TL_SetState(&tlSouth, TL_YELLOW);
         TL_SetState(&tlNorth, TL_YELLOW);
         osDelay(yellowMs);
-        sec = osKernelGetTickCount() / 1000;
-        printf("%4lus | NS       | S=%2lu N=%2lu | ROSSO\r\n", sec, vehiclesS, vehiclesN);
+        LogEvent("NS", "ROSSO", vehiclesS, vehiclesN, 0);
         TL_SetState(&tlSouth, TL_RED);
         TL_SetState(&tlNorth, TL_RED);
+
+        osDelay(1000U);
+
         osSemaphoreRelease(semEst);
         osSemaphoreRelease(semEst);
     }
 }
 
 /*============================================================================*/
-/*                                 EstTask                                     */
+/*                                 EstTask                                    */
 /*============================================================================*/
 void EstTask(void *argument)
 {
-    uint32_t vehiclesE, sec;
+    uint32_t vehiclesE;
     for (;;)
     {
         osSemaphoreAcquire(semEst, osWaitForever);
         osSemaphoreAcquire(semEst, osWaitForever);
 
         vehiclesE = (rand() % MAX_VEHICLES) + 1;
-        sec = osKernelGetTickCount() / 1000;
 
         currentPhase = PHASE_EST;
         osThreadFlagsClear(IRQ_FLAG);
@@ -239,41 +230,40 @@ void EstTask(void *argument)
         uint32_t yellowMs = ped ? (T_YELLOW_MS / 2) : T_YELLOW_MS;
 
         if (ped) {
-            printf("%4lus | Est      |     %2lu | VERDE(PRIO)\r\n", sec, vehiclesE);
+            LogEvent("Est", "VERDE(PRIO)", 0, 0, vehiclesE);
         } else if (greenMs > T_GREEN_MS) {
-            printf("%4lus | Est      |     %2lu | EXTEND\r\n", sec, vehiclesE);
+            LogEvent("Est", "EXTEND", 0, 0, vehiclesE);
         } else {
-            printf("%4lus | Est      |     %2lu | VERDE\r\n", sec, vehiclesE);
+            LogEvent("Est", "VERDE", 0, 0, vehiclesE);
         }
 
         TL_SetState(&tlEast, TL_GREEN);
 
         uint32_t flags = osThreadFlagsWait(IRQ_FLAG, osFlagsWaitAny, greenMs);
         if (flags & IRQ_FLAG) {
-            sec = osKernelGetTickCount() / 1000;
-            printf("%4lus | Est      |     %2lu | GIALLO(INT)\r\n", sec, vehiclesE);
+            LogEvent("Est", "GIALLO", 0, 0, vehiclesE);
             TL_SetState(&tlEast, TL_YELLOW);
             osDelay(yellowMs);
-            sec = osKernelGetTickCount() / 1000;
-            printf("%4lus | Est      |     %2lu | ROSSO\r\n", sec, vehiclesE);
+            LogEvent("Est", "ROSSO", 0, 0, vehiclesE);
             TL_SetState(&tlEast, TL_RED);
             osSemaphoreRelease(semPed);
             continue;
         }
 
-        sec = osKernelGetTickCount() / 1000;
-        printf("%4lus | Est      |     %2lu | GIALLO\r\n", sec, vehiclesE);
+        LogEvent("Est", "GIALLO", 0, 0, vehiclesE);
         TL_SetState(&tlEast, TL_YELLOW);
         osDelay(yellowMs);
-        sec = osKernelGetTickCount() / 1000;
-        printf("%4lus | Est      |     %2lu | ROSSO\r\n", sec, vehiclesE);
+        LogEvent("Est", "ROSSO", 0, 0, vehiclesE);
         TL_SetState(&tlEast, TL_RED);
+
+        osDelay(1000U);
+
         osSemaphoreRelease(semPed);
     }
 }
 
 /*============================================================================*/
-/*                                 PedTask                                     */
+/*                                 PedTask                                    */
 /*============================================================================*/
 void PedTask(void *argument)
 {
@@ -281,13 +271,12 @@ void PedTask(void *argument)
     {
         osSemaphoreAcquire(semPed, osWaitForever);
 
-        uint32_t sec = osKernelGetTickCount() / 1000;
-        printf("%4lus | Ped      |      -  | ON\r\n", sec);
+        LogEvent("Ped", "ON", 0, 0, 0);
         PL_On(&plSouth);
         PL_On(&plEast);
         osDelay(T_PED_TOTAL_MS - T_PED_BLINK_MS);
 
-        printf("%4lus | Ped      |      -  | BLINK\r\n", osKernelGetTickCount() / 1000);
+        LogEvent("Ped", "BLINK", 0, 0, 0);
         for (uint32_t i = 0; i < T_PED_BLINK_MS / T_PED_BLINK_INTERVAL_MS; ++i) {
             PL_Toggle(&plSouth);
             PL_Toggle(&plEast);
@@ -296,17 +285,20 @@ void PedTask(void *argument)
 
         PL_Off(&plSouth);
         PL_Off(&plEast);
-        printf("%4lus | Ped      |      -  | OFF\r\n", osKernelGetTickCount() / 1000);
+        LogEvent("Ped", "OFF", 0, 0, 0);
 
         osEventFlagsClear(pedFlags, PED_FLAG);
         currentPhase = PHASE_PED;
+
+        osDelay(1000U);
+
         osSemaphoreRelease(semNS);
     }
 }
 
-/**
-  * @brief  System Clock Configuration
-  */
+/*============================================================================*/
+/*                                 SYSTEMCLOCK_Config                         */
+/*============================================================================*/
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
@@ -336,52 +328,58 @@ void SystemClock_Config(void)
     Error_Handler();
 }
 
-/**
-  * @brief  GPIO Initialization Function
-  */
+/*============================================================================*/
+/*                                 GPIO_Init                                  */
+/*============================================================================*/
 static void MX_GPIO_Init(void)
 {
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-  __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
 
-  GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull  = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull  = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 
-  GPIO_InitStruct.Pin = S_RED_PIN | S_YELLOW_PIN | S_GREEN_PIN;
-  HAL_GPIO_Init(S_PORT, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin = TL_SOUTH_RED.pin
+                        | TL_SOUTH_YELLOW.pin
+                        | TL_SOUTH_GREEN.pin;
+    HAL_GPIO_Init(TL_SOUTH_RED.port, &GPIO_InitStruct);
 
-  GPIO_InitStruct.Pin = N_RED_PIN | N_YELLOW_PIN | N_GREEN_PIN;
-  HAL_GPIO_Init(N_PORT, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin = TL_NORTH_RED.pin
+                        | TL_NORTH_YELLOW.pin
+                        | TL_NORTH_GREEN.pin;
+    HAL_GPIO_Init(TL_NORTH_RED.port, &GPIO_InitStruct);
 
-  GPIO_InitStruct.Pin = E_RED_PIN | E_YELLOW_PIN | E_GREEN_PIN;
-  HAL_GPIO_Init(E_PORT, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin = TL_EAST_RED.pin
+                        | TL_EAST_YELLOW.pin
+                        | TL_EAST_GREEN.pin;
+    HAL_GPIO_Init(TL_EAST_RED.port, &GPIO_InitStruct);
 
-  GPIO_InitStruct.Pin = S_PED_PIN;
-  HAL_GPIO_Init(S_PED_PORT, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin = PED_SOUTH.pin;
+    HAL_GPIO_Init(PED_SOUTH.port, &GPIO_InitStruct);
 
-  GPIO_InitStruct.Pin = E_PED_PIN;
-  HAL_GPIO_Init(E_PED_PORT, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin = PED_EAST.pin;
+    HAL_GPIO_Init(PED_EAST.port, &GPIO_InitStruct);
 
-  for (size_t i = 0; i < sizeof(allLights)/sizeof(allLights[0]); ++i) {
-    TL_Init(&allLights[i]);
-  }
-  PL_Init(&plSouth);
-  PL_Init(&plEast);
+    TL_Init(&tlSouth);
+    TL_Init(&tlNorth);
+    TL_Init(&tlEast);
+    PL_Init(&plSouth);
+    PL_Init(&plEast);
 
-  HAL_GPIO_WritePin(S_PED_PORT, S_PED_PIN, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(E_PED_PORT, E_PED_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(PED_SOUTH.port, PED_SOUTH.pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(PED_EAST.port,  PED_EAST.pin,  GPIO_PIN_RESET);
 
-  GPIO_InitStruct.Pin  = GPIO_PIN_13;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+    GPIO_InitStruct.Pin  = BUTTON_PED.pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(BUTTON_PED.port, &GPIO_InitStruct);
 
-  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+    HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 }
 
 /**
