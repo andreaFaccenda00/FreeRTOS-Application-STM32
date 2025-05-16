@@ -72,6 +72,13 @@ The application uses a **cyclic task schedule** driven by semaphores, with real-
   - `osEventFlagsSet()` to signal that a pedestrian has requested crossing.
   - `osThreadFlagsSet()` to notify the currently active task (`NSTask` or `EstTask`) to **end green early**.
 
+### ⏸️ Inter-phase Delay and Watchdog Protection
+
+To enhance the realism of the intersection logic, a **1-second delay** (`osDelay(1000U)`) has been inserted **between the transition of traffic phases** (e.g., from North-South to East and vice versa). This simulates a real-world "all-red" interlock period that reduces the risk of collisions at the junction.
+
+Moreover, the system is protected by an **Independent Watchdog Timer (IWDG)**, configured with a timeout of 32 seconds. The watchdog is refreshed within the **RTOS idle task**, ensuring it only resets the system in case of a stall, task starvation, or unresponsiveness. This mechanism safeguards against **race conditions, blocking operations, or system crashes**, increasing system robustness.
+
+
 ---
 
 ## ⏱️ Timing Configuration
