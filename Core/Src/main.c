@@ -20,7 +20,8 @@
 #include "pinout.h"
 #include "FreeRTOS.h"
 #include "virtual_time.h"
-
+#include "ssd1306.h"
+#include "ssd1306_fonts.h"
 /*============================================================================*/
 /*                                  GLOBAL                                    */
 /*============================================================================*/
@@ -56,6 +57,7 @@ static const PedLight_t plEast = {
 };
 
 COM_InitTypeDef       BspCOMInit;
+I2C_HandleTypeDef hi2c1;
 osSemaphoreId_t       semNS, semEst, semPed;
 static osEventFlagsId_t pedFlags;
 osThreadId_t          nsTaskHandle, estTaskHandle, pedTaskHandle;
@@ -76,6 +78,7 @@ void NSTask(void *argument);
 void EstTask(void *argument);
 void PedTask(void *argument);
 void Error_Handler(void);
+static void MX_I2C1_Init(void);
 
 /*============================================================================*/
 /*                                  MAIN                                      */
@@ -85,6 +88,9 @@ int main(void)
     HAL_Init();
     SystemClock_Config();
     MX_GPIO_Init();
+    MX_I2C1_Init();
+
+    ssd1306_Init();    /* ←  driver hi2c1 */
 
     if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) {
         __HAL_RCC_CLEAR_RESET_FLAGS();
@@ -141,7 +147,13 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
             osThreadFlagsSet(estTaskHandle, IRQ_FLAG);
         }
 
+        ssd1306_Fill(Black);
+        ssd1306_SetCursor(0, 0);
+        ssd1306_WriteString("Pedestrian Wait", Font_16x15, White);
+
+        ssd1306_UpdateScreen();
         LogEvent("Button", "PED_PRIO", 0, 0, 0);
+
     }
 }
 
@@ -158,7 +170,18 @@ void NSTask(void *argument)
         vehiclesS = (rand() % MAX_VEHICLES) + 1;
         vehiclesN = (rand() % MAX_VEHICLES) + 1;
 
-        printf("Orario virtuale: %02lu:00\n", (unsigned long)GetVirtualHour());
+        char buf[24];
+        ssd1306_Fill(Black);
+
+        sprintf(buf, "S: %2lu Cars", (unsigned long)vehiclesS);
+        ssd1306_SetCursor(0, 0);
+        ssd1306_WriteString(buf, Font_16x15, White);
+
+        sprintf(buf, "N: %2lu Cars", (unsigned long)vehiclesN);
+        ssd1306_SetCursor(0, 22);
+        ssd1306_WriteString(buf, Font_16x15, White);
+
+        ssd1306_UpdateScreen();
 
         currentPhase = PHASE_NS;
         osThreadFlagsClear(IRQ_FLAG);
@@ -222,6 +245,15 @@ void EstTask(void *argument)
         osSemaphoreAcquire(semEst, osWaitForever);
 
         vehiclesE = (rand() % MAX_VEHICLES) + 1;
+
+        char buf[24];
+        ssd1306_Fill(Black);
+
+        sprintf(buf, "E: %2lu Cars", (unsigned long)vehiclesE);
+        ssd1306_SetCursor(0, 0);
+        ssd1306_WriteString(buf, Font_16x15, White);
+
+        ssd1306_UpdateScreen();
 
         currentPhase = PHASE_EST;
         osThreadFlagsClear(IRQ_FLAG);
@@ -333,6 +365,53 @@ void SystemClock_Config(void)
 }
 
 /*============================================================================*/
+/*                                 SystemClock_Config                         */
+/*============================================================================*/
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.Timing = 0x40B285C2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+
+}
+
+
+/*============================================================================*/
 /*                                 GPIO_Init                                  */
 /*============================================================================*/
 static void MX_GPIO_Init(void)
@@ -342,6 +421,7 @@ static void MX_GPIO_Init(void)
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_GPIOF_CLK_ENABLE();
 
     GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
@@ -377,6 +457,13 @@ static void MX_GPIO_Init(void)
     HAL_GPIO_WritePin(PED_SOUTH.port, PED_SOUTH.pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(PED_EAST.port,  PED_EAST.pin,  GPIO_PIN_RESET);
 
+    /*Configure GPIO pins :PC8 PC9*/
+    GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
     GPIO_InitStruct.Pin  = BUTTON_PED.pin;
     GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
@@ -384,6 +471,20 @@ static void MX_GPIO_Init(void)
 
     HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM6)
+  {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
 }
 
 /**
@@ -404,3 +505,4 @@ void assert_failed(uint8_t *file, uint32_t line)
   /* Optional: insert debug print here */
 }
 #endif
+
