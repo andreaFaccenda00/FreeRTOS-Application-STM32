@@ -1,13 +1,11 @@
-/* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Traffic lights with pedestrian crossing and synchronized NS phase
-  *                   using CMSIS-RTOS2 API
-  ******************************************************************************
-*/
+/*============================================================================*/
+/*       Traffic lights with pedestrian crossing and synchronized NS phase    */
+/*                       using CMSIS-RTOS2 API                                */
+/*============================================================================*/
 
-/* Includes ------------------------------------------------------------------*/
+/*============================================================================*/
+/*                                  INCLUDES                                  */
+/*============================================================================*/
 #include "main.h"
 #include "cmsis_os2.h"
 #include <stdio.h>
@@ -19,7 +17,6 @@
 #include "app_config.h"
 #include "pinout.h"
 #include "FreeRTOS.h"
-#include "virtual_time.h"
 #include "ssd1306.h"
 #include "ssd1306_fonts.h"
 /*============================================================================*/
@@ -59,8 +56,8 @@ static const PedLight_t plEast = {
 COM_InitTypeDef       BspCOMInit;
 I2C_HandleTypeDef hi2c1;
 osSemaphoreId_t       semNS, semEst, semPed;
-static osEventFlagsId_t pedFlags;
-osThreadId_t          nsTaskHandle, estTaskHandle, pedTaskHandle;
+static osEventFlagsId_t flagsId;
+osThreadId_t          nsTaskHandle, estTaskHandle, pedTaskHandle, emergencyTaskHandle;
 
 typedef enum { PHASE_NS, PHASE_EST, PHASE_PED } Phase_t;
 static volatile Phase_t currentPhase = PHASE_NS;
@@ -68,6 +65,7 @@ static volatile Phase_t currentPhase = PHASE_NS;
 const osThreadAttr_t nsTask_attributes  = { .name = "NSTask",  .priority = osPriorityAboveNormal,    .stack_size = 128*4 };
 const osThreadAttr_t estTask_attributes = { .name = "EstTask", .priority = osPriorityAboveNormal,    .stack_size = 128*4 };
 const osThreadAttr_t pedTaskAttr        = { .name = "PedTask", .priority = osPriorityAboveNormal1,  .stack_size = 128*4 };
+const osThreadAttr_t emergencyTaskAttr  = { .name = "EmergencyTask", .priority = osPriorityRealtime,   .stack_size = 128*4 };
 
 /*============================================================================*/
 /*                                  PROTOTYPES                                */
@@ -78,6 +76,7 @@ void NSTask(void *argument);
 void EstTask(void *argument);
 void PedTask(void *argument);
 void Error_Handler(void);
+void EmergencyTask(void *argument);
 static void MX_I2C1_Init(void);
 
 /*============================================================================*/
@@ -101,12 +100,8 @@ int main(void)
     srand(HAL_GetTick());
     osKernelInitialize();
 
-    InitVirtualTime(10000U); /* ← inizialize virtual clock to attive night mode */
-
-    pedFlags = osEventFlagsNew(NULL);
-    if (pedFlags == NULL) {
-        Error_Handler();
-    }
+    flagsId = osEventFlagsNew(NULL);
+    if (flagsId == NULL) Error_Handler();
 
     semNS  = osSemaphoreNew(1, 1, NULL);
     semEst = osSemaphoreNew(2, 0, NULL);
@@ -127,10 +122,45 @@ int main(void)
     nsTaskHandle  = osThreadNew(NSTask,  NULL, &nsTask_attributes);
     estTaskHandle = osThreadNew(EstTask, NULL, &estTask_attributes);
     pedTaskHandle = osThreadNew(PedTask, NULL, &pedTaskAttr);
+    emergencyTaskHandle = osThreadNew(EmergencyTask, NULL, &emergencyTaskAttr);
 
     osKernelStart();
     while (1) {  }
 }
+
+/*============================================================================*/
+/*                                  EmergencyTask                             */
+/*============================================================================*/
+void EmergencyTask(void *argument)
+{
+    const uint32_t period_ms = 15000;
+    for (;;)
+    {
+        osDelay(period_ms);
+
+        ssd1306_Fill(Black);
+        ssd1306_SetCursor(0, 0);
+        ssd1306_WriteString("Emergency", Font_16x15, White);
+        ssd1306_UpdateScreen();
+
+        osEventFlagsSet(flagsId, EMG_FLAG);
+
+        TL_SetState(&tlSouth, TL_RED);
+        TL_SetState(&tlNorth, TL_RED);
+        TL_SetState(&tlEast,   TL_RED);
+
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_SET);
+        osDelay(5000);
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
+
+        while (osSemaphoreAcquire(semNS, 0) == osOK);
+        osSemaphoreRelease(semNS);
+
+        osEventFlagsClear(flagsId, EMG_FLAG);
+
+    }
+}
+
 
 /*============================================================================*/
 /*                          EXTI CALLBACK                                     */
@@ -139,7 +169,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     if (GPIO_Pin == GPIO_PIN_13)
     {
-        osEventFlagsSet(pedFlags, PED_FLAG);
+    	osEventFlagsSet(flagsId, PED_FLAG);
 
         if (currentPhase == PHASE_NS) {
             osThreadFlagsSet(nsTaskHandle, IRQ_FLAG);
@@ -167,6 +197,11 @@ void NSTask(void *argument)
     {
         osSemaphoreAcquire(semNS, osWaitForever);
 
+        if (osEventFlagsGet(flagsId) & EMG_FLAG) {
+            osEventFlagsClear(flagsId, EMG_FLAG);
+            continue;
+        }
+
         vehiclesS = (rand() % MAX_VEHICLES) + 1;
         vehiclesN = (rand() % MAX_VEHICLES) + 1;
 
@@ -183,50 +218,71 @@ void NSTask(void *argument)
 
         ssd1306_UpdateScreen();
 
-        currentPhase = PHASE_NS;
-        osThreadFlagsClear(IRQ_FLAG);
-
-        bool ped = (osEventFlagsGet(pedFlags) & PED_FLAG) != 0;
-        uint32_t greenMs = ped ? (T_GREEN_MS / 2)
-                               : ((vehiclesS > PRIORITY_THRESHOLD || vehiclesN > PRIORITY_THRESHOLD)
-                                  ? T_GREEN_EXTENSION_MS
-                                  : T_GREEN_MS);
-        uint32_t yellowMs = ped ? (T_YELLOW_MS / 2) : T_YELLOW_MS;
-
-        if (ped) {
-            LogEvent("NS", "VERDE(PRIO)", vehiclesS, vehiclesN, 0);
-        } else if (greenMs > T_GREEN_MS) {
-            LogEvent("NS", "EXTEND", vehiclesS, vehiclesN, 0);
-        } else {
-            LogEvent("NS", "VERDE", vehiclesS, vehiclesN, 0);
-        }
+        bool pedReq = (osEventFlagsGet(flagsId) & PED_FLAG) != 0;
+        uint32_t greenMs  = pedReq
+                           ? (T_GREEN_MS/2)
+                           : ((vehiclesS > PRIORITY_THRESHOLD || vehiclesN > PRIORITY_THRESHOLD)
+                              ? T_GREEN_EXTENSION_MS
+                              : T_GREEN_MS);
+        uint32_t yellowMs = pedReq ? (T_YELLOW_MS/2) : T_YELLOW_MS;
 
         TL_SetState(&tlSouth, TL_GREEN);
         TL_SetState(&tlNorth, TL_GREEN);
         TL_SetState(&tlEast,   TL_RED);
 
-        uint32_t flags = osThreadFlagsWait(IRQ_FLAG, osFlagsWaitAny, greenMs);
-        if (flags & IRQ_FLAG) {
-            LogEvent("NS", "GIALLO",vehiclesS, vehiclesN, 0);
+        uint32_t flags = osEventFlagsWait(
+            flagsId,
+            EMG_FLAG | PED_FLAG,
+            osFlagsWaitAny,
+            greenMs
+        );
+        if (flags & EMG_FLAG) {
+            continue;
+        }
+        if (flags & PED_FLAG) {
+            LogEvent("NS","GIALLO",vehiclesS,vehiclesN,0);
             TL_SetState(&tlSouth, TL_YELLOW);
             TL_SetState(&tlNorth, TL_YELLOW);
-            osDelay(yellowMs);
-            LogEvent("NS", "ROSSO", vehiclesS, vehiclesN, 0);
+
+            flags = osEventFlagsWait(
+                flagsId,
+                EMG_FLAG,
+                osFlagsWaitAny,
+                yellowMs
+            );
+            if (flags & EMG_FLAG) { continue; }
+
+            LogEvent("NS","ROSSO",vehiclesS,vehiclesN,0);
             TL_SetState(&tlSouth, TL_RED);
             TL_SetState(&tlNorth, TL_RED);
             osSemaphoreRelease(semPed);
+            osEventFlagsClear(flagsId, PED_FLAG);
             continue;
         }
 
-        LogEvent("NS", "GIALLO", vehiclesS, vehiclesN, 0);
+        LogEvent("NS","GIALLO",vehiclesS,vehiclesN,0);
         TL_SetState(&tlSouth, TL_YELLOW);
         TL_SetState(&tlNorth, TL_YELLOW);
-        osDelay(yellowMs);
-        LogEvent("NS", "ROSSO", vehiclesS, vehiclesN, 0);
+
+        flags = osEventFlagsWait(
+            flagsId,
+            EMG_FLAG,
+            osFlagsWaitAny,
+            yellowMs
+        );
+        if (flags & EMG_FLAG) { continue; }
+
+        LogEvent("NS","ROSSO",vehiclesS,vehiclesN,0);
         TL_SetState(&tlSouth, TL_RED);
         TL_SetState(&tlNorth, TL_RED);
 
-        osDelay(1000U);
+        flags = osEventFlagsWait(
+            flagsId,
+            EMG_FLAG,
+            osFlagsWaitAny,
+            1000U
+        );
+        if (flags & EMG_FLAG) { continue; }
 
         osSemaphoreRelease(semEst);
         osSemaphoreRelease(semEst);
@@ -244,6 +300,11 @@ void EstTask(void *argument)
         osSemaphoreAcquire(semEst, osWaitForever);
         osSemaphoreAcquire(semEst, osWaitForever);
 
+        if (osEventFlagsGet(flagsId) & EMG_FLAG) {
+            osEventFlagsClear(flagsId, EMG_FLAG);
+            continue;
+        }
+
         vehiclesE = (rand() % MAX_VEHICLES) + 1;
 
         char buf[24];
@@ -255,44 +316,65 @@ void EstTask(void *argument)
 
         ssd1306_UpdateScreen();
 
-        currentPhase = PHASE_EST;
-        osThreadFlagsClear(IRQ_FLAG);
-
-        bool ped = (osEventFlagsGet(pedFlags) & PED_FLAG) != 0;
-        uint32_t greenMs = ped ? (T_GREEN_MS / 2)
-                              : (vehiclesE > PRIORITY_THRESHOLD
-                                 ? T_GREEN_EXTENSION_MS
-                                 : T_GREEN_MS);
-        uint32_t yellowMs = ped ? (T_YELLOW_MS / 2) : T_YELLOW_MS;
-
-        if (ped) {
-            LogEvent("Est", "VERDE(PRIO)", 0, 0, vehiclesE);
-        } else if (greenMs > T_GREEN_MS) {
-            LogEvent("Est", "EXTEND", 0, 0, vehiclesE);
-        } else {
-            LogEvent("Est", "VERDE", 0, 0, vehiclesE);
-        }
+        bool pedReq = (osEventFlagsGet(flagsId) & PED_FLAG) != 0;
+        uint32_t greenMs  = pedReq
+                           ? (T_GREEN_MS/2)
+                           : ((vehiclesE > PRIORITY_THRESHOLD)
+                              ? T_GREEN_EXTENSION_MS
+                              : T_GREEN_MS);
+        uint32_t yellowMs = pedReq ? (T_YELLOW_MS/2) : T_YELLOW_MS;
 
         TL_SetState(&tlEast, TL_GREEN);
 
-        uint32_t flags = osThreadFlagsWait(IRQ_FLAG, osFlagsWaitAny, greenMs);
-        if (flags & IRQ_FLAG) {
-            LogEvent("Est", "GIALLO", 0, 0, vehiclesE);
+        uint32_t flags = osEventFlagsWait(
+            flagsId,
+            EMG_FLAG | PED_FLAG,
+            osFlagsWaitAny,
+            greenMs
+        );
+        if (flags & EMG_FLAG) {
+            continue;
+        }
+        if (flags & PED_FLAG) {
+            LogEvent("Est","GIALLO",0,0,vehiclesE);
             TL_SetState(&tlEast, TL_YELLOW);
-            osDelay(yellowMs);
-            LogEvent("Est", "ROSSO", 0, 0, vehiclesE);
+
+            flags = osEventFlagsWait(
+                flagsId,
+                EMG_FLAG,
+                osFlagsWaitAny,
+                yellowMs
+            );
+            if (flags & EMG_FLAG) { continue; }
+
+            LogEvent("Est","ROSSO",0,0,vehiclesE);
             TL_SetState(&tlEast, TL_RED);
             osSemaphoreRelease(semPed);
+            osEventFlagsClear(flagsId, PED_FLAG);
             continue;
         }
 
-        LogEvent("Est", "GIALLO", 0, 0, vehiclesE);
+        LogEvent("Est","GIALLO",0,0,vehiclesE);
         TL_SetState(&tlEast, TL_YELLOW);
-        osDelay(yellowMs);
-        LogEvent("Est", "ROSSO", 0, 0, vehiclesE);
+
+        flags = osEventFlagsWait(
+            flagsId,
+            EMG_FLAG,
+            osFlagsWaitAny,
+            yellowMs
+        );
+        if (flags & EMG_FLAG) { continue; }
+
+        LogEvent("Est","ROSSO",0,0,vehiclesE);
         TL_SetState(&tlEast, TL_RED);
 
-        osDelay(1000U);
+        flags = osEventFlagsWait(
+            flagsId,
+            EMG_FLAG,
+            osFlagsWaitAny,
+            1000U
+        );
+        if (flags & EMG_FLAG) { continue; }
 
         osSemaphoreRelease(semPed);
     }
@@ -307,13 +389,29 @@ void PedTask(void *argument)
     {
         osSemaphoreAcquire(semPed, osWaitForever);
 
-        LogEvent("Ped", "ON", 0, 0, 0);
+        if (osEventFlagsGet(flagsId) & EMG_FLAG) {
+            osEventFlagsClear(flagsId, EMG_FLAG);
+            continue;
+        }
+
+        LogEvent("Ped","ON",0,0,0);
         PL_On(&plSouth);
         PL_On(&plEast);
-        osDelay(T_PED_TOTAL_MS - T_PED_BLINK_MS);
 
-        LogEvent("Ped", "BLINK", 0, 0, 0);
+        uint32_t t1 = T_PED_TOTAL_MS - T_PED_BLINK_MS;
+        uint32_t flags = osEventFlagsWait(
+            flagsId,
+            EMG_FLAG,
+            osFlagsWaitAny,
+            t1
+        );
+        if (flags & EMG_FLAG) { continue; }
+
+        LogEvent("Ped","BLINK",0,0,0);
         for (uint32_t i = 0; i < T_PED_BLINK_MS / T_PED_BLINK_INTERVAL_MS; ++i) {
+            if (osEventFlagsGet(flagsId) & EMG_FLAG) {
+                break;
+            }
             PL_Toggle(&plSouth);
             PL_Toggle(&plEast);
             osDelay(T_PED_BLINK_INTERVAL_MS);
@@ -321,12 +419,16 @@ void PedTask(void *argument)
 
         PL_Off(&plSouth);
         PL_Off(&plEast);
-        LogEvent("Ped", "OFF", 0, 0, 0);
+        LogEvent("Ped","OFF",0,0,0);
+        osEventFlagsClear(flagsId, PED_FLAG);
 
-        osEventFlagsClear(pedFlags, PED_FLAG);
-        currentPhase = PHASE_PED;
-
-        osDelay(1000U);
+        flags = osEventFlagsWait(
+            flagsId,
+            EMG_FLAG,
+            osFlagsWaitAny,
+            1000U
+        );
+        if (flags & EMG_FLAG) { continue; }
 
         osSemaphoreRelease(semNS);
     }
@@ -365,18 +467,10 @@ void SystemClock_Config(void)
 }
 
 /*============================================================================*/
-/*                                 SystemClock_Config                         */
+/*                                 I2C1_Init                         		  */
 /*============================================================================*/
 static void MX_I2C1_Init(void)
 {
-
-  /* USER CODE BEGIN I2C1_Init 0 */
-
-  /* USER CODE END I2C1_Init 0 */
-
-  /* USER CODE BEGIN I2C1_Init 1 */
-
-  /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
   hi2c1.Init.Timing = 0x40B285C2;
   hi2c1.Init.OwnAddress1 = 0;
@@ -391,23 +485,15 @@ static void MX_I2C1_Init(void)
     Error_Handler();
   }
 
-  /** Configure Analogue filter
-  */
   if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
   {
     Error_Handler();
   }
 
-  /** Configure Digital filter
-  */
   if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN I2C1_Init 2 */
-
-  /* USER CODE END I2C1_Init 2 */
-
 }
 
 
@@ -457,17 +543,26 @@ static void MX_GPIO_Init(void)
     HAL_GPIO_WritePin(PED_SOUTH.port, PED_SOUTH.pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(PED_EAST.port,  PED_EAST.pin,  GPIO_PIN_RESET);
 
-    /*Configure GPIO pins :PC8 PC9*/
+    /* Configure GPIO pins :PC8 PC9 */
     GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9;
     GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
+    /*Configure GPIO pins :PC7 */
+    GPIO_InitStruct.Pin   = GPIO_PIN_7;
+    GPIO_InitStruct.Mode  = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull  = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+
     GPIO_InitStruct.Pin  = BUTTON_PED.pin;
     GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
     GPIO_InitStruct.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(BUTTON_PED.port, &GPIO_InitStruct);
+
 
     HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);
     HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
@@ -475,21 +570,13 @@ static void MX_GPIO_Init(void)
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-  /* USER CODE BEGIN Callback 0 */
 
-  /* USER CODE END Callback 0 */
   if (htim->Instance == TIM6)
   {
     HAL_IncTick();
   }
-  /* USER CODE BEGIN Callback 1 */
-
-  /* USER CODE END Callback 1 */
 }
 
-/**
-  * @brief  This function is executed in case of error occurrence.
-  */
 void Error_Handler(void)
 {
   __disable_irq();
@@ -497,12 +584,9 @@ void Error_Handler(void)
 }
 
 #ifdef  USE_FULL_ASSERT
-/**
-  * @brief  Reports file name and line number
-  */
+
 void assert_failed(uint8_t *file, uint32_t line)
 {
-  /* Optional: insert debug print here */
 }
 #endif
 
