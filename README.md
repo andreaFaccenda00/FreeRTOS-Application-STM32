@@ -22,7 +22,7 @@ This project implements a **real-time traffic light control system** on an STM32
 - 🚶‍♂️ Pedestrian crossing support with LED indication and blink phase
 - 🔁 Task-based control architecture with inter-task synchronization
 - 📊 Dynamic traffic monitoring with green light extension
-- ⏱️ Timing control and task notification using RTOS primitives
+- ⏱️ Preemption-based emergency interruption using `osThreadFlags`
 
 ---
 
@@ -30,54 +30,53 @@ This project implements a **real-time traffic light control system** on an STM32
 
 ### 🧵 RTOS Task Structure
 
-| Task Name  | Description                                              |
-|------------|----------------------------------------------------------|
-| `NSTask`   | Manages North-South lights (PA0, PA1, PA4 + PC10–12)     |
-| `EstTask`  | Manages East traffic light (PC6, PC8, PC9)               |
-| `PedTask`  | Controls pedestrian LEDs (PB5, PB7) and pedestrian logic |
+| Task Name         | Description                                                                 |
+|------------------|-----------------------------------------------------------------------------|
+| `NSTask`          | Manages North-South lights (PA0, PA1, PA4 + PC10–12)                        |
+| `EstTask`         | Manages East traffic light (PC6, PC8, PC9)                                  |
+| `PedTask`         | Controls pedestrian LEDs (PB5, PB7) and logic                               |
+| `EmergencyTask`   | Periodically interrupts all tasks to simulate emergency preemption via LED |
 
-Each task operates independently but is triggered based on semaphores and inter-task signaling.
+Each task uses **`osThreadFlagsWait`** for real-time responsiveness to events like emergency or pedestrian requests.
 
 ---
 
 ## 🔍 System Behavior
 
-The application uses a **cyclic task schedule** driven by semaphores, with real-time responsiveness to external events (button presses). Key behaviors include:
+### 🔁 Traffic Cycle Overview
 
-### 🔁 Traffic Light Cycle
+1. **North-South Phase (`NSTask`)**
+   - Activated via `semNS` (binary semaphore).
+   - Uses `rand()` to simulate vehicle count on South and North.
+   - If count exceeds a threshold, green is extended.
+   - If a **pedestrian request** occurs (`PED_FLAG`), green time is halved.
+   - At the end of green or upon pedestrian/emergency, transitions to yellow, then red.
 
-1. **`NSTask` (North-South Phase)**:  
-   - Triggered via `semNS` binary semaphore.
-   - Simulates a number of vehicles in South and North directions using `rand()`.
-   - If the number of vehicles on either direction exceeds a `PRIORITY_THRESHOLD`, the **green time is extended** from the default `T_GREEN_MS` (4s) to `T_GREEN_EXTENSION_MS` (6s).
-   - If a **pedestrian button** is pressed during this phase, green time is **cut in half** to prioritize pedestrians.
+2. **East Phase (`EstTask`)**
+   - Needs **two tokens** from `semEst`.
+   - Same dynamic timing logic as `NSTask`.
+   - Transitions to pedestrian phase via `semPed`.
 
-2. **`EstTask` (East Phase)**:  
-   - Requires **two tokens** from the counting semaphore `semEst`, released by `NSTask`.
-   - Manages the East light with the same dynamic timing logic:
-     - Extended green if traffic is heavy (more than 15 vehicles).
-     - Shortened green if pedestrian flag is active.
+3. **Pedestrian Phase (`PedTask`)**
+   - Activated via `semPed`.
+   - LEDs ON steady for 4s, then blink for 1s (250ms interval).
+   - On emergency, phase is immediately aborted.
+   - Releases `semNS` to restart cycle.
 
-3. **`PedTask` (Pedestrian Crossing)**:  
-   - Triggered via `semPed`.
-   - Pedestrian LEDs (PB5, PB7) are:
-     - ON for 4 seconds
-     - Blinking for 1 second (at 250 ms intervals)
-   - After execution, it clears the pedestrian event flag and resumes the North-South phase.
+4. **Emergency Phase (`EmergencyTask`)**
+   - Every 15 seconds, sets `EMG_FLAG` via `osThreadFlagsSet` to **preempt all tasks**.
+   - Forces all lights to red and turns on an emergency LED (`PC7`) for 5s.
+   - Clears semaphores to reset the traffic cycle to North-South.
 
-### 🔘 Button Interrupt Logic
+### 🔘 Pedestrian Button
 
-- An **external interrupt** on pin `PC13` handles the pedestrian button press.
-- The handler uses:
-  - `osEventFlagsSet()` to signal that a pedestrian has requested crossing.
-  - `osThreadFlagsSet()` to notify the currently active task (`NSTask` or `EstTask`) to **end green early**.
+- External interrupt on `PC13` triggers pedestrian request.
+- Sets `PED_FLAG` and notifies active task (`NSTask` or `EstTask`) via `osThreadFlagsSet`.
 
-### ⏸️ Inter-phase Delay and Watchdog Protection
+### ⏸️ Inter-Phase Delay and Watchdog
 
-To enhance the realism of the intersection logic, a **1-second delay** (`osDelay(1000U)`) has been inserted **between the transition of traffic phases** (e.g., from North-South to East and vice versa). This simulates a real-world "all-red" interlock period that reduces the risk of collisions at the junction.
-
-Moreover, the system is protected by an **Independent Watchdog Timer (IWDG)**, configured with a timeout of 32 seconds. The watchdog is refreshed within the **RTOS idle task**, ensuring it only resets the system in case of a stall, task starvation, or unresponsiveness. This mechanism safeguards against **race conditions, blocking operations, or system crashes**, increasing system robustness.
-
+- Each phase has a **1-second all-red delay** (`osDelay(1000)`) before releasing the next phase.
+- An **Independent Watchdog Timer (IWDG)** resets the system in case of deadlock.
 
 ---
 
@@ -91,62 +90,61 @@ Moreover, the system is protected by an **Independent Watchdog Timer (IWDG)**, c
 | 🚶 Pedestrian Steady  | 4000          |
 | 🚨 Pedestrian Blinking| 1000          |
 | 🔁 Blink Interval     | 250           |
+| 🚨 Emergency Interval | 15000         |
+| 🚨 Emergency Duration | 5000          |
 
 ---
 
 ## 🔐 Synchronization (CMSIS-RTOS2)
 
-This project demonstrates the practical use of **CMSIS-RTOS2 primitives**:
+| API                   | Use Case                                |
+|-----------------------|------------------------------------------|
+| `osThreadNew()`       | Thread creation                          |
+| `osSemaphoreNew()`    | Phase synchronization                    |
+| `osSemaphoreAcquire()`| Await phase                              |
+| `osSemaphoreRelease()`| Transition to next phase                 |
+| `osThreadFlagsSet()`  | Notify individual threads (e.g. EMG, PED)|
+| `osThreadFlagsWait()` | Handle preemption and external signals   |
+| `osDelay()`           | Time-controlled transitions              |
 
-| RTOS2 API              | Purpose                                      | Usage Example                               |
-|------------------------|----------------------------------------------|---------------------------------------------|
-| `osThreadNew()`        | Creates RTOS threads                         | `NSTask`, `EstTask`, `PedTask`              |
-| `osSemaphoreNew()`     | Creates binary/counting semaphores           | `semNS`, `semEst`, `semPed`                 |
-| `osSemaphoreAcquire()` | Blocks a task until the semaphore is released| Controls task execution order               |
-| `osSemaphoreRelease()` | Signals another task to run                  | Task-to-task progression                    |
-| `osEventFlagsNew()`    | Creates an event flag group                  | `pedFlags` for button state                 |
-| `osEventFlagsSet()`    | Signals an event (e.g., from ISR)            | Called in `HAL_GPIO_EXTI_Callback()`        |
-| `osThreadFlagsSet()`   | Notifies a specific task (non-blocking)      | Used to interrupt ongoing task              |
-| `osThreadFlagsWait()`  | Waits for a notification                     | Allows task to respond immediately to events|
-| `osDelay()`            | Suspends a task for given ms                 | Implements timed delays (green, yellow, etc.)|
-| `osKernelGetTickCount()`| Gets system time (ms tick)                  | Used for logging and timestamp generation   |
-
-The real-time design ensures **non-blocking, deterministic transitions** between traffic phases and pedestrian requests. By decoupling responsibilities across RTOS tasks, the system is modular and scalable.
+> The use of `osThreadFlags` eliminates the need for global shared flags. Preemption becomes **task-specific** and deterministic.
 
 ---
 
 ## ⚙️ GPIO Pin Mapping
 
-| Component            | Port | Pins                |
-|--------------------- |------|---------------------|
-| 🚦 North-South Light | A    | PA0, PA1, PA4       |
-| 🚦 North (duplicate) | C    | PC10, PC11, PC12    |
-| 🚦 East Light        | C    | PC6, PC8, PC9       |
-| 🚶 Pedestrian LEDs   | B    | PB5 (South), PB7 (East) |
-| 🔘 Pedestrian Button | C    | PC13                |
+| Component            | Port | Pins                        |
+|----------------------|------|-----------------------------|
+| North-South Lights   | A    | PA0, PA1, PA4               |
+| North Duplicate      | C    | PC10, PC11, PC12            |
+| East Light           | C    | PC6, PC8, PC9               |
+| Pedestrian LEDs      | B    | PB5 (South), PB7 (East)     |
+| Pedestrian Button    | C    | PC13                        |
+| Emergency LED        | C    | PC7                         |
 
 ---
 
 ## 🧰 Development Environment
 
-- 💻 **STM32CubeIDE**  
-- 🧵 **CMSIS-RTOS2** (FreeRTOS-based)  
-- 🔌 **STM32 HAL Drivers**  
-- 📦 **STM32G4 Nucleo Board**  
-- 🪛 Serial output via `printf()` (for logging traffic events)
+- 💻 **STM32CubeIDE**
+- ⚙️ **STM32 HAL Drivers**
+- 🧵 **CMSIS-RTOS2 (FreeRTOS)**
+- 🔌 **STM32G4 Nucleo Board**
+- 🖨️ **Serial debug via `printf()`**
+- 🖥️ **OLED Display (SSD1306 via I2C)**
 
 ---
 
 ## 🚀 Future Improvements
 
-- 📲 UART command support for remote control or debug console
-- 📷 Replace vehicle simulation with real sensors (IR, radar)
-- 🔔 Audio feedback for visually impaired pedestrians
-- 🌐 Web dashboard using Ethernet or Wi-Fi
+- 📡 Replace random vehicle input with IR sensors
+- 📲 UART interface for remote control
+- 🌐 Real-time web dashboard with ESP32 bridge
+- 🔔 Add buzzer for visually impaired pedestrians
 
 ---
 
 ## 📄 License
 
 © 2025 STMicroelectronics  
-Released for **educational and non-commercial use** only.
+Released under **educational and non-commercial use only**.
