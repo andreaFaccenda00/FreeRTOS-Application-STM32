@@ -19,6 +19,7 @@
 #include "FreeRTOS.h"
 #include "ssd1306.h"
 #include "ssd1306_fonts.h"
+#include "core_cm4.h"
 /*============================================================================*/
 /*                                  GLOBAL                                    */
 /*============================================================================*/
@@ -58,6 +59,7 @@ I2C_HandleTypeDef hi2c1;
 osSemaphoreId_t       semNS, semEst, semPed;
 static osEventFlagsId_t flagsId;
 osThreadId_t          nsTaskHandle, estTaskHandle, pedTaskHandle, emergencyTaskHandle;
+osMutexId_t           oledMutex;
 
 typedef enum { PHASE_NS, PHASE_EST, PHASE_PED } Phase_t;
 static volatile Phase_t currentPhase = PHASE_NS;
@@ -97,11 +99,19 @@ int main(void)
     }
     MX_IWDG_Init(); 	/* ← inizialize watchdog */
 
-    srand(HAL_GetTick());
+    CoreDebug->DEMCR   |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CTRL          |= DWT_CTRL_CYCCNTENA_Msk;
+    uint32_t seed = DWT->CYCCNT;
+    srand(seed);
     osKernelInitialize();
 
     flagsId = osEventFlagsNew(NULL);
     if (flagsId == NULL) Error_Handler();
+
+    oledMutex = osMutexNew(NULL);
+    if (oledMutex == NULL) {
+        Error_Handler();
+    }
 
     semNS  = osSemaphoreNew(1, 1, NULL);
     semEst = osSemaphoreNew(2, 0, NULL);
@@ -133,21 +143,23 @@ int main(void)
 /*============================================================================*/
 void EmergencyTask(void *argument)
 {
-    const uint32_t period_ms = 15000;
+    const uint32_t period_ms = 25000;
     for (;;)
     {
         osDelay(period_ms);
 
-        ssd1306_Fill(Black);
-        ssd1306_SetCursor(0, 0);
+		osMutexAcquire(oledMutex, osWaitForever);
+		ssd1306_Fill(Black);
+		ssd1306_SetCursor(0, 0);
         ssd1306_WriteString("Emergency", Font_16x15, White);
-        ssd1306_UpdateScreen();
+		ssd1306_UpdateScreen();
+	    osMutexRelease(oledMutex);
 
         osEventFlagsSet(flagsId, EMG_FLAG);
 
         TL_SetState(&tlSouth, TL_RED);
         TL_SetState(&tlNorth, TL_RED);
-        TL_SetState(&tlEast,   TL_RED);
+        TL_SetState(&tlEast,   TL_GREEN);
 
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_SET);
         osDelay(5000);
@@ -160,7 +172,6 @@ void EmergencyTask(void *argument)
 
     }
 }
-
 
 /*============================================================================*/
 /*                          EXTI CALLBACK                                     */
@@ -177,11 +188,13 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
             osThreadFlagsSet(estTaskHandle, IRQ_FLAG);
         }
 
-        ssd1306_Fill(Black);
-        ssd1306_SetCursor(0, 0);
+		osMutexAcquire(oledMutex, osWaitForever);
+		ssd1306_Fill(Black);
+		ssd1306_SetCursor(0, 0);
         ssd1306_WriteString("Pedestrian Wait", Font_16x15, White);
+		ssd1306_UpdateScreen();
+	    osMutexRelease(oledMutex);
 
-        ssd1306_UpdateScreen();
         LogEvent("Button", "PED_PRIO", 0, 0, 0);
 
     }
@@ -196,6 +209,7 @@ void NSTask(void *argument)
     for (;;)
     {
         osSemaphoreAcquire(semNS, osWaitForever);
+        osEventFlagsClear(flagsId, PED_FLAG);
 
         if (osEventFlagsGet(flagsId) & EMG_FLAG) {
             osEventFlagsClear(flagsId, EMG_FLAG);
@@ -206,17 +220,17 @@ void NSTask(void *argument)
         vehiclesN = (rand() % MAX_VEHICLES) + 1;
 
         char buf[24];
-        ssd1306_Fill(Black);
 
+		osMutexAcquire(oledMutex, osWaitForever);
+		ssd1306_Fill(Black);
         sprintf(buf, "S: %2lu Cars", (unsigned long)vehiclesS);
-        ssd1306_SetCursor(0, 0);
-        ssd1306_WriteString(buf, Font_16x15, White);
-
+		ssd1306_SetCursor(0, 0);
+		ssd1306_WriteString(buf, Font_16x15, White);
         sprintf(buf, "N: %2lu Cars", (unsigned long)vehiclesN);
         ssd1306_SetCursor(0, 22);
         ssd1306_WriteString(buf, Font_16x15, White);
-
-        ssd1306_UpdateScreen();
+		ssd1306_UpdateScreen();
+	    osMutexRelease(oledMutex);
 
         bool pedReq = (osEventFlagsGet(flagsId) & PED_FLAG) != 0;
         uint32_t greenMs  = pedReq
@@ -308,13 +322,14 @@ void EstTask(void *argument)
         vehiclesE = (rand() % MAX_VEHICLES) + 1;
 
         char buf[24];
-        ssd1306_Fill(Black);
 
+		osMutexAcquire(oledMutex, osWaitForever);
+		ssd1306_Fill(Black);
         sprintf(buf, "E: %2lu Cars", (unsigned long)vehiclesE);
         ssd1306_SetCursor(0, 0);
         ssd1306_WriteString(buf, Font_16x15, White);
-
-        ssd1306_UpdateScreen();
+		ssd1306_UpdateScreen();
+	    osMutexRelease(oledMutex);
 
         bool pedReq = (osEventFlagsGet(flagsId) & PED_FLAG) != 0;
         uint32_t greenMs  = pedReq
@@ -589,4 +604,3 @@ void assert_failed(uint8_t *file, uint32_t line)
 {
 }
 #endif
-

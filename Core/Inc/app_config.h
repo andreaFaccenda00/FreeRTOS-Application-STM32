@@ -12,9 +12,8 @@
 #define T_PED_BLINK_MS          1000U
 #define T_PED_BLINK_INTERVAL_MS 250U
 
-#define EMG_FLAG (1U<<0)
-#define PED_FLAG (1U<<1)
-#define IRQ_FLAG    (1U << 0)
-
+#define EMG_FLAG (1U << 0)
+#define PED_FLAG (1U << 0)
+#define IRQ_FLAG (1U << 2)
 
 #endif // APP_CONFIG_H
