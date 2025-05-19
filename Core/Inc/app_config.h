@@ -13,5 +13,7 @@
 #define T_PED_BLINK_INTERVAL_MS 250U
 
 #define EMG_FLAG (1U << 0)
+#define PED_FLAG_NS   (1U<<1)
+#define PED_FLAG_EST  (1U<<2)
 
 #endif // APP_CONFIG_H
