@@ -3,9 +3,6 @@
 /*                       using CMSIS-RTOS2 API                                */
 /*============================================================================*/
 
-/*============================================================================*/
-/*                                  INCLUDES                                  */
-/*============================================================================*/
 #include "main.h"
 #include "cmsis_os2.h"
 #include <stdio.h>
@@ -20,70 +17,61 @@
 #include "ssd1306.h"
 #include "ssd1306_fonts.h"
 #include "core_cm4.h"
-/*============================================================================*/
-/*                                  GLOBAL                                    */
-/*============================================================================*/
-static const TrafficLight_t tlSouth = {
+
+static const TrafficLight_t trafficLightSouth = {
     .port       = TL_SOUTH_RED.port,
     .pin_red    = TL_SOUTH_RED.pin,
     .pin_yellow = TL_SOUTH_YELLOW.pin,
     .pin_green  = TL_SOUTH_GREEN.pin
 };
 
-static const TrafficLight_t tlNorth = {
+static const TrafficLight_t trafficLightNorth = {
     .port       = TL_NORTH_RED.port,
     .pin_red    = TL_NORTH_RED.pin,
     .pin_yellow = TL_NORTH_YELLOW.pin,
     .pin_green  = TL_NORTH_GREEN.pin
 };
 
-static const TrafficLight_t tlEast = {
+static const TrafficLight_t trafficLightEast = {
     .port       = TL_EAST_RED.port,
     .pin_red    = TL_EAST_RED.pin,
     .pin_yellow = TL_EAST_YELLOW.pin,
     .pin_green  = TL_EAST_GREEN.pin
 };
 
-static const PedLight_t plSouth = {
+static const PedLight_t pedestrianLightSouth = {
     .port = PED_SOUTH.port,
     .pin  = PED_SOUTH.pin
 };
 
-static const PedLight_t plEast = {
+static const PedLight_t pedestrianLightEast = {
     .port = PED_EAST.port,
     .pin  = PED_EAST.pin
 };
 
-COM_InitTypeDef       BspCOMInit;
-I2C_HandleTypeDef hi2c1;
-osSemaphoreId_t       semNS, semEst, semPed;
-static osEventFlagsId_t flagsId;
-osThreadId_t          nsTaskHandle, estTaskHandle, pedTaskHandle, emergencyTaskHandle;
-osMutexId_t           oledMutex;
+COM_InitTypeDef       serialConfig;
+I2C_HandleTypeDef  hi2c1;
+osSemaphoreId_t       northSouthSemaphore, eastSemaphore, pedestrianSemaphore;
+osEventFlagsId_t      eventFlagsId;
+osThreadId_t          northSouthTaskHandle, eastTrafficTaskHandle, pedestrianTaskHandle, emergencyTaskHandle;
+osMutexId_t           oledDisplayMutex;
 
 typedef enum { PHASE_NS, PHASE_EST, PHASE_PED } Phase_t;
-static volatile Phase_t currentPhase = PHASE_NS;
+static volatile Phase_t activeTrafficPhase = PHASE_NS;
 
-const osThreadAttr_t nsTask_attributes  = { .name = "NSTask",  .priority = osPriorityAboveNormal,    .stack_size = 128*4 };
-const osThreadAttr_t estTask_attributes = { .name = "EstTask", .priority = osPriorityAboveNormal,    .stack_size = 128*4 };
-const osThreadAttr_t pedTaskAttr        = { .name = "PedTask", .priority = osPriorityAboveNormal1,  .stack_size = 128*4 };
-const osThreadAttr_t emergencyTaskAttr  = { .name = "EmergencyTask", .priority = osPriorityRealtime,   .stack_size = 128*4 };
+const osThreadAttr_t northSouthTaskAttributes  = { .name = "NorthSouthTask",  .priority = osPriorityAboveNormal,    .stack_size = 128*4 };
+const osThreadAttr_t eastTrafficTaskAttributes = { .name = "EastSemTask",     .priority = osPriorityAboveNormal,    .stack_size = 128*4 };
+const osThreadAttr_t pedestrianTaskAttributes  = { .name = "PedTask",         .priority = osPriorityAboveNormal1,  .stack_size = 128*4 };
+const osThreadAttr_t emergencyTaskAttributes   = { .name = "EmergencyTask",   .priority = osPriorityRealtime,      .stack_size = 128*4 };
 
-/*============================================================================*/
-/*                                  PROTOTYPES                                */
-/*============================================================================*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-void NSTask(void *argument);
-void EstTask(void *argument);
-void PedTask(void *argument);
-void Error_Handler(void);
+void NorthSouthTask(void *argument);
+void EastTrafficTask(void *argument);
+void PedestrianTask(void *argument);
 void EmergencyTask(void *argument);
 static void MX_I2C1_Init(void);
 
-/*============================================================================*/
-/*                                  MAIN                                      */
-/*============================================================================*/
 int main(void)
 {
     HAL_Init();
@@ -91,328 +79,296 @@ int main(void)
     MX_GPIO_Init();
     MX_I2C1_Init();
 
-    ssd1306_Init();    /* ←  driver hi2c1 */
+    ssd1306_Init();
 
     if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) {
         __HAL_RCC_CLEAR_RESET_FLAGS();
-        printf("*** Reset causato da IWDG ***\r\n");
+        printf("*** Reset caused by IWDG ***\r\n");
     }
-    MX_IWDG_Init(); 	/* ← inizialize watchdog */
+    MX_IWDG_Init();
 
-    CoreDebug->DEMCR   |= CoreDebug_DEMCR_TRCENA_Msk;
-    DWT->CTRL          |= DWT_CTRL_CYCCNTENA_Msk;
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
     uint32_t seed = DWT->CYCCNT;
     srand(seed);
     osKernelInitialize();
 
-    flagsId = osEventFlagsNew(NULL);
-    if (flagsId == NULL) Error_Handler();
+    eventFlagsId = osEventFlagsNew(NULL);
+    if (eventFlagsId == NULL) Error_Handler();
 
-    oledMutex = osMutexNew(NULL);
-    if (oledMutex == NULL) {
-        Error_Handler();
-    }
+    oledDisplayMutex = osMutexNew(NULL);
+    if (oledDisplayMutex == NULL) Error_Handler();
 
-    semNS  = osSemaphoreNew(1, 1, NULL);
-    semEst = osSemaphoreNew(2, 0, NULL);
-    semPed = osSemaphoreNew(1, 0, NULL);
-    if (!semNS || !semEst || !semPed) {
-        Error_Handler();
-    }
+    northSouthSemaphore = osSemaphoreNew(1, 1, NULL);
+    eastSemaphore = osSemaphoreNew(2, 0, NULL);
+    pedestrianSemaphore = osSemaphoreNew(1, 0, NULL);
+    if (!northSouthSemaphore || !eastSemaphore || !pedestrianSemaphore) Error_Handler();
 
-    BspCOMInit.BaudRate   = 115200;
-    BspCOMInit.WordLength = COM_WORDLENGTH_8B;
-    BspCOMInit.StopBits   = COM_STOPBITS_1;
-    BspCOMInit.Parity     = COM_PARITY_NONE;
-    BspCOMInit.HwFlowCtl  = COM_HWCONTROL_NONE;
-    if (BSP_COM_Init(COM1, &BspCOMInit) != BSP_ERROR_NONE) {
-        Error_Handler();
-    }
+    serialConfig.BaudRate   = 115200;
+    serialConfig.WordLength = COM_WORDLENGTH_8B;
+    serialConfig.StopBits   = COM_STOPBITS_1;
+    serialConfig.Parity     = COM_PARITY_NONE;
+    serialConfig.HwFlowCtl  = COM_HWCONTROL_NONE;
+    if (BSP_COM_Init(COM1, &serialConfig) != BSP_ERROR_NONE) Error_Handler();
 
-    nsTaskHandle  = osThreadNew(NSTask,  NULL, &nsTask_attributes);
-    estTaskHandle = osThreadNew(EstTask, NULL, &estTask_attributes);
-    pedTaskHandle = osThreadNew(PedTask, NULL, &pedTaskAttr);
-    emergencyTaskHandle = osThreadNew(EmergencyTask, NULL, &emergencyTaskAttr);
+    northSouthTaskHandle    = osThreadNew(NorthSouthTask, NULL, &northSouthTaskAttributes);
+    eastTrafficTaskHandle   = osThreadNew(EastTrafficTask, NULL, &eastTrafficTaskAttributes);
+    pedestrianTaskHandle    = osThreadNew(PedestrianTask, NULL, &pedestrianTaskAttributes);
+    emergencyTaskHandle     = osThreadNew(EmergencyTask, NULL, &emergencyTaskAttributes);
 
     osKernelStart();
-    while (1) {  }
+    while (1) {}
 }
 
 /*============================================================================*/
-/*                                  EmergencyTask                             */
+/*                                 NorthSouthTask                             */
+/*============================================================================*/
+void NorthSouthTask(void *argument)
+{
+    uint32_t vehiclesSouth, vehiclesNorth;
+    for (;;) {
+        osSemaphoreAcquire(northSouthSemaphore, osWaitForever);
+        LogEventTS("NorthSouthTask_start");
+
+        if (osEventFlagsGet(eventFlagsId) & EMG_FLAG) {
+            osEventFlagsClear(eventFlagsId, EMG_FLAG);
+            LogEventTS("NorthSouthTask_end_by_emergency");
+            continue;
+        }
+
+        vehiclesSouth = (rand() % MAX_VEHICLES) + 1;
+        vehiclesNorth = (rand() % MAX_VEHICLES) + 1;
+
+        char buf[24];
+
+        osMutexAcquire(oledDisplayMutex, osWaitForever);
+        ssd1306_Fill(Black);
+        sprintf(buf, "S: %2lu Cars", (unsigned long)vehiclesSouth);
+        ssd1306_SetCursor(0, 0);
+        ssd1306_WriteString(buf, Font_16x15, White);
+        sprintf(buf, "N: %2lu Cars", (unsigned long)vehiclesNorth);
+        ssd1306_SetCursor(0, 22);
+        ssd1306_WriteString(buf, Font_16x15, White);
+        ssd1306_UpdateScreen();
+        osMutexRelease(oledDisplayMutex);
+
+        bool pedestrianRequest = false;
+        if (osEventFlagsGet(eventFlagsId) & PED_FLAG_NS) {
+            pedestrianRequest = true;
+            osEventFlagsClear(eventFlagsId, PED_FLAG_NS);
+        }
+
+        uint32_t greenTime  = pedestrianRequest ? (T_GREEN_MS/2) : ((vehiclesSouth > PRIORITY_THRESHOLD || vehiclesNorth > PRIORITY_THRESHOLD) ? T_GREEN_EXTENSION_MS : T_GREEN_MS);
+        uint32_t yellowTime = pedestrianRequest ? (T_YELLOW_MS/2) : T_YELLOW_MS;
+
+        TL_SetState(&trafficLightSouth, TL_GREEN);
+        TL_SetState(&trafficLightNorth, TL_GREEN);
+        TL_SetState(&trafficLightEast, TL_RED);
+
+        uint32_t flags = osEventFlagsWait(eventFlagsId, EMG_FLAG | PED_FLAG_NS, osFlagsWaitAny, greenTime);
+        if (flags & EMG_FLAG) {
+        	LogEventTS("NorthSouthTask_end_by_emergency");
+        	continue;
+        }
+        if (flags & PED_FLAG_NS) osEventFlagsClear(eventFlagsId, PED_FLAG_NS);
+
+        TL_SetState(&trafficLightSouth, TL_YELLOW);
+        TL_SetState(&trafficLightNorth, TL_YELLOW);
+
+        flags = osEventFlagsWait(eventFlagsId, EMG_FLAG | PED_FLAG_NS, osFlagsWaitAny, yellowTime);
+        if (flags & EMG_FLAG) {
+        	LogEventTS("NorthSouthTask_end_by_emergency");
+        	continue;
+        }
+        if (flags & PED_FLAG_NS) osEventFlagsClear(eventFlagsId, PED_FLAG_NS);
+
+        TL_SetState(&trafficLightSouth, TL_RED);
+        TL_SetState(&trafficLightNorth, TL_RED);
+
+        flags = osEventFlagsWait(eventFlagsId, EMG_FLAG, osFlagsWaitAny, 1000U);
+        if (flags & EMG_FLAG) {
+        	LogEventTS("NorthSouthTask_end_by_emergency");
+        	continue;
+        }
+
+        LogEventTS("NorthSouthTask_end");
+        osSemaphoreRelease(eastSemaphore);
+        osSemaphoreRelease(eastSemaphore);
+    }
+}
+
+/*============================================================================*/
+/*                                 EastTrafficTask                            */
+/*============================================================================*/
+void EastTrafficTask(void *argument)
+{
+    uint32_t vehiclesEast;
+    for (;;) {
+        osSemaphoreAcquire(eastSemaphore, osWaitForever);
+        osSemaphoreAcquire(eastSemaphore, osWaitForever);
+        LogEventTS("EastTrafficTask_start");
+
+        if (osEventFlagsGet(eventFlagsId) & EMG_FLAG) {
+            osEventFlagsClear(eventFlagsId, EMG_FLAG);
+            LogEventTS("EastTrafficTask_end_by_emergency");
+            continue;
+        }
+
+        vehiclesEast = (rand() % MAX_VEHICLES) + 1;
+        char buf[24];
+
+        osMutexAcquire(oledDisplayMutex, osWaitForever);
+        ssd1306_Fill(Black);
+        sprintf(buf, "E: %2lu Cars", (unsigned long)vehiclesEast);
+        ssd1306_SetCursor(0, 0);
+        ssd1306_WriteString(buf, Font_16x15, White);
+        ssd1306_UpdateScreen();
+        osMutexRelease(oledDisplayMutex);
+
+        bool pedestrianRequest = false;
+        if (osEventFlagsGet(eventFlagsId) & PED_FLAG_EST) {
+            pedestrianRequest = true;
+            osEventFlagsClear(eventFlagsId, PED_FLAG_EST);
+        }
+
+        uint32_t greenTime  = pedestrianRequest ? (T_GREEN_MS/2) : ((vehiclesEast > PRIORITY_THRESHOLD) ? T_GREEN_EXTENSION_MS : T_GREEN_MS);
+        uint32_t yellowTime = pedestrianRequest ? (T_YELLOW_MS/2) : T_YELLOW_MS;
+
+        TL_SetState(&trafficLightEast, TL_GREEN);
+
+        uint32_t flags = osEventFlagsWait(eventFlagsId, EMG_FLAG | PED_FLAG_EST, osFlagsWaitAny, greenTime);
+        if (flags & EMG_FLAG) {
+        	LogEventTS("EastTrafficTask_end_by_emergency");
+        	continue;
+        }
+
+        if (flags & PED_FLAG_EST) osEventFlagsClear(eventFlagsId, PED_FLAG_EST);
+
+        TL_SetState(&trafficLightEast, TL_YELLOW);
+
+        flags = osEventFlagsWait(eventFlagsId, EMG_FLAG | PED_FLAG_EST, osFlagsWaitAny, yellowTime);
+        if (flags & EMG_FLAG) {
+        	LogEventTS("EastTrafficTask_end_by_emergency");
+        	continue;
+        }
+        if (flags & PED_FLAG_EST) osEventFlagsClear(eventFlagsId, PED_FLAG_EST);
+
+        TL_SetState(&trafficLightEast, TL_RED);
+
+        flags = osEventFlagsWait(eventFlagsId, EMG_FLAG, osFlagsWaitAny, 1000U);
+        if (flags & EMG_FLAG) {
+        	LogEventTS("EastTrafficTask_end_by_emergency");
+        	continue;
+        }
+
+        LogEventTS("EastTrafficTask_end");
+        osSemaphoreRelease(pedestrianSemaphore);
+    }
+}
+
+/*============================================================================*/
+/*                                 PedestrianTask                             */
+/*============================================================================*/
+void PedestrianTask(void *argument)
+{
+    for (;;) {
+        osSemaphoreAcquire(pedestrianSemaphore, osWaitForever);
+        LogEventTS("PedestrianTask_start");
+
+        osEventFlagsClear(eventFlagsId, PED_FLAG_NS | PED_FLAG_EST);
+
+        if (osEventFlagsGet(eventFlagsId) & EMG_FLAG) {
+            osEventFlagsClear(eventFlagsId, EMG_FLAG);
+            LogEventTS("PedestrianTask_end_by_emergency");
+            continue;
+        }
+
+        PL_On(&pedestrianLightSouth);
+        PL_On(&pedestrianLightEast);
+
+        uint32_t t1 = T_PED_TOTAL_MS - T_PED_BLINK_MS;
+        uint32_t flags = osEventFlagsWait(eventFlagsId, EMG_FLAG, osFlagsWaitAny, t1);
+        if (flags & EMG_FLAG) {
+        	LogEventTS("PedestrianTask_end_by_emergency");
+        	continue;
+        }
+
+        for (uint32_t i = 0; i < T_PED_BLINK_MS / T_PED_BLINK_INTERVAL_MS; ++i) {
+            if (osEventFlagsGet(eventFlagsId) & EMG_FLAG) break;
+            PL_Toggle(&pedestrianLightSouth);
+            PL_Toggle(&pedestrianLightEast);
+            osDelay(T_PED_BLINK_INTERVAL_MS);
+        }
+
+        PL_Off(&pedestrianLightSouth);
+        PL_Off(&pedestrianLightEast);
+
+        flags = osEventFlagsWait(eventFlagsId, EMG_FLAG, osFlagsWaitAny, 1000U);
+        if (flags & EMG_FLAG) {
+        	LogEventTS("PedestrianTask_end_by_emergency");
+        	continue;
+        }
+
+        LogEventTS("PedestrianTask_end");
+        osSemaphoreRelease(northSouthSemaphore);
+    }
+}
+
+/*============================================================================*/
+/*                                 EmergencyTask                              */
 /*============================================================================*/
 void EmergencyTask(void *argument)
 {
-    const uint32_t period_ms = 60000;
-    for (;;)
-    {
-    	LogEventTS("EmgTASK_START");
+    const uint32_t period_ms = 30000;
+    for (;;) {
+        LogEventTS("EmergencyTask_start");
 
-    	osDelay(period_ms);
+        osDelay(period_ms);
 
-    	LogEventTS("EmgTASK_WAKEUP");
+        LogEventTS("EmergencyTask_wakeup");
 
-		osMutexAcquire(oledMutex, osWaitForever);
-		ssd1306_Fill(Black);
-		ssd1306_SetCursor(0, 0);
+        osMutexAcquire(oledDisplayMutex, osWaitForever);
+        ssd1306_Fill(Black);
+        ssd1306_SetCursor(0, 0);
         ssd1306_WriteString("Emergency", Font_16x15, White);
-		ssd1306_UpdateScreen();
-	    osMutexRelease(oledMutex);
+        ssd1306_UpdateScreen();
+        osMutexRelease(oledDisplayMutex);
 
-        osEventFlagsSet(flagsId, EMG_FLAG);
+        osEventFlagsSet(eventFlagsId, EMG_FLAG);
 
-        TL_SetState(&tlSouth, TL_RED);
-        TL_SetState(&tlNorth, TL_RED);
-        TL_SetState(&tlEast,   TL_GREEN);
+        TL_SetState(&trafficLightSouth, TL_RED);
+        TL_SetState(&trafficLightNorth, TL_RED);
+        TL_SetState(&trafficLightEast, TL_GREEN);
+        PL_Off(&pedestrianLightSouth);
+        PL_Off(&pedestrianLightEast);
 
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_SET);
         osDelay(5000);
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
 
-        while (osSemaphoreAcquire(semNS, 0) == osOK);
-        LogEventTS("EmgTASK_END");
-        osSemaphoreRelease(semNS);
-
-        osEventFlagsClear(flagsId, EMG_FLAG);
-
+        while (osSemaphoreAcquire(northSouthSemaphore, 0) == osOK);
+        LogEventTS("EmergencyTask_end");
+        osSemaphoreRelease(northSouthSemaphore);
+        osEventFlagsClear(eventFlagsId, EMG_FLAG);
     }
 }
 
 /*============================================================================*/
-/*                          EXTI CALLBACK                                     */
+/*                                 EXTI_Callback                              */
 /*============================================================================*/
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     if (GPIO_Pin == GPIO_PIN_13)
     {
-    	LogEventTS("ISR_PED");
-    	osMutexAcquire(oledMutex, osWaitForever);
-		ssd1306_Fill(Black);
-		ssd1306_SetCursor(0, 0);
-        ssd1306_WriteString("Pedestrian Wait", Font_16x15, White);
-		ssd1306_UpdateScreen();
-	    osMutexRelease(oledMutex);
-
-        osEventFlagsSet(flagsId, PED_FLAG_NS | PED_FLAG_EST);
-
-    }
-}
-
-/*============================================================================*/
-/*                                 NSTask                                     */
-/*============================================================================*/
-void NSTask(void *argument)
-{
-    uint32_t vehiclesS, vehiclesN;
-    for (;;)
-    {
-        osSemaphoreAcquire(semNS, osWaitForever);
-        LogEventTS("NsTASK_START");
-
-        if (osEventFlagsGet(flagsId) & EMG_FLAG) {
-            osEventFlagsClear(flagsId, EMG_FLAG);
-            continue;
-        }
-
-        vehiclesS = (rand() % MAX_VEHICLES) + 1;
-        vehiclesN = (rand() % MAX_VEHICLES) + 1;
-
-        char buf[24];
-
-		osMutexAcquire(oledMutex, osWaitForever);
-		ssd1306_Fill(Black);
-        sprintf(buf, "S: %2lu Cars", (unsigned long)vehiclesS);
-		ssd1306_SetCursor(0, 0);
-		ssd1306_WriteString(buf, Font_16x15, White);
-        sprintf(buf, "N: %2lu Cars", (unsigned long)vehiclesN);
-        ssd1306_SetCursor(0, 22);
-        ssd1306_WriteString(buf, Font_16x15, White);
-		ssd1306_UpdateScreen();
-	    osMutexRelease(oledMutex);
-
-	    bool pedReq = false;
-        if (osEventFlagsGet(flagsId) & PED_FLAG_NS) {
-            pedReq = true;
-            osEventFlagsClear(flagsId, PED_FLAG_NS);
-        }
-        uint32_t greenMs  = pedReq
-                           ? (T_GREEN_MS/2)
-                           : ((vehiclesS > PRIORITY_THRESHOLD || vehiclesN > PRIORITY_THRESHOLD)
-                              ? T_GREEN_EXTENSION_MS
-                              : T_GREEN_MS);
-        uint32_t yellowMs = pedReq ? (T_YELLOW_MS/2) : T_YELLOW_MS;
-
-        TL_SetState(&tlSouth, TL_GREEN);
-        TL_SetState(&tlNorth, TL_GREEN);
-        TL_SetState(&tlEast,   TL_RED);
-
-        uint32_t flags = osEventFlagsWait(
-            flagsId,
-            EMG_FLAG | PED_FLAG_NS,
-            osFlagsWaitAny,
-            greenMs
-        );
-        if (flags & EMG_FLAG) {continue;}
-
-        if (flags & PED_FLAG_NS) {osEventFlagsClear(flagsId, PED_FLAG_NS);}
-
-        TL_SetState(&tlSouth, TL_YELLOW);
-        TL_SetState(&tlNorth, TL_YELLOW);
-
-        flags = osEventFlagsWait(
-            flagsId,
-            EMG_FLAG | PED_FLAG_NS,
-            osFlagsWaitAny,
-            yellowMs
-        );
-        if (flags & EMG_FLAG) { continue; }
-        if (flags & PED_FLAG_NS) {osEventFlagsClear(flagsId, PED_FLAG_NS);}
-
-        TL_SetState(&tlSouth, TL_RED);
-        TL_SetState(&tlNorth, TL_RED);
-
-        flags = osEventFlagsWait(
-            flagsId,
-            EMG_FLAG,
-            osFlagsWaitAny,
-            1000U
-        );
-        if (flags & EMG_FLAG) { continue; }
-
-        LogEventTS("NsTASK_END");
-        osSemaphoreRelease(semEst);
-        osSemaphoreRelease(semEst);
-    }
-}
-
-/*============================================================================*/
-/*                                 EstTask                                    */
-/*============================================================================*/
-void EstTask(void *argument)
-{
-    uint32_t vehiclesE;
-    for (;;)
-    {
-        osSemaphoreAcquire(semEst, osWaitForever);
-        osSemaphoreAcquire(semEst, osWaitForever);
-        LogEventTS("EstTASK_START");
-
-        if (osEventFlagsGet(flagsId) & EMG_FLAG) {
-            osEventFlagsClear(flagsId, EMG_FLAG);
-            continue;
-        }
-
-        vehiclesE = (rand() % MAX_VEHICLES) + 1;
-
-        char buf[24];
-
-		osMutexAcquire(oledMutex, osWaitForever);
-		ssd1306_Fill(Black);
-        sprintf(buf, "E: %2lu Cars", (unsigned long)vehiclesE);
+        LogEventTS("ISR_PED");
+        osMutexAcquire(oledDisplayMutex, osWaitForever);
+        ssd1306_Fill(Black);
         ssd1306_SetCursor(0, 0);
-        ssd1306_WriteString(buf, Font_16x15, White);
-		ssd1306_UpdateScreen();
-	    osMutexRelease(oledMutex);
+        ssd1306_WriteString("Pedestrian Wait", Font_16x15, White);
+        ssd1306_UpdateScreen();
+        osMutexRelease(oledDisplayMutex);
 
-        bool pedReq = false;
-        if (osEventFlagsGet(flagsId) & PED_FLAG_EST) {
-            pedReq = true;
-            osEventFlagsClear(flagsId, PED_FLAG_EST);
-        }
-        uint32_t greenMs  = pedReq
-                           ? (T_GREEN_MS/2)
-                           : ((vehiclesE > PRIORITY_THRESHOLD)
-                              ? T_GREEN_EXTENSION_MS
-                              : T_GREEN_MS);
-        uint32_t yellowMs = pedReq ? (T_YELLOW_MS/2) : T_YELLOW_MS;
-
-        TL_SetState(&tlEast, TL_GREEN);
-
-        uint32_t flags = osEventFlagsWait(
-            flagsId,
-            EMG_FLAG | PED_FLAG_EST,
-            osFlagsWaitAny,
-            greenMs
-        );
-        if (flags & EMG_FLAG) {continue;}
-        if (flags & PED_FLAG_EST) {osEventFlagsClear(flagsId, PED_FLAG_EST);}
-
-        TL_SetState(&tlEast, TL_YELLOW);
-
-        flags = osEventFlagsWait(
-            flagsId,
-            EMG_FLAG | PED_FLAG_EST,
-            osFlagsWaitAny,
-            yellowMs
-        );
-        if (flags & EMG_FLAG) { continue; }
-        if (flags & PED_FLAG_EST) {osEventFlagsClear(flagsId, PED_FLAG_EST);}
-
-        TL_SetState(&tlEast, TL_RED);
-
-        flags = osEventFlagsWait(
-            flagsId,
-            EMG_FLAG,
-            osFlagsWaitAny,
-            1000U
-        );
-        if (flags & EMG_FLAG) { continue; }
-
-        LogEventTS("EstTASK_END");
-        osSemaphoreRelease(semPed);
-    }
-}
-
-/*============================================================================*/
-/*                                 PedTask                                    */
-/*============================================================================*/
-void PedTask(void *argument)
-{
-    for (;;)
-    {
-        osSemaphoreAcquire(semPed, osWaitForever);
-        LogEventTS("PedTASK_START");
-
-        osEventFlagsClear(flagsId, PED_FLAG_NS | PED_FLAG_EST);
-
-        if (osEventFlagsGet(flagsId) & EMG_FLAG) {
-            osEventFlagsClear(flagsId, EMG_FLAG);
-            continue;
-        }
-
-        PL_On(&plSouth);
-        PL_On(&plEast);
-
-        uint32_t t1 = T_PED_TOTAL_MS - T_PED_BLINK_MS;
-        uint32_t flags = osEventFlagsWait(
-            flagsId,
-            EMG_FLAG,
-            osFlagsWaitAny,
-            t1
-        );
-        if (flags & EMG_FLAG) { continue; }
-
-        for (uint32_t i = 0; i < T_PED_BLINK_MS / T_PED_BLINK_INTERVAL_MS; ++i) {
-            if (osEventFlagsGet(flagsId) & EMG_FLAG) {
-                break;
-            }
-            PL_Toggle(&plSouth);
-            PL_Toggle(&plEast);
-            osDelay(T_PED_BLINK_INTERVAL_MS);
-        }
-
-        PL_Off(&plSouth);
-        PL_Off(&plEast);
-
-        flags = osEventFlagsWait(
-            flagsId,
-            EMG_FLAG,
-            osFlagsWaitAny,
-            1000U
-        );
-        if (flags & EMG_FLAG) { continue; }
-        LogEventTS("PedTASK_END");
-        osSemaphoreRelease(semNS);
+        osEventFlagsSet(eventFlagsId, PED_FLAG_NS | PED_FLAG_EST);
     }
 }
 
@@ -478,7 +434,6 @@ static void MX_I2C1_Init(void)
   }
 }
 
-
 /*============================================================================*/
 /*                                 GPIO_Init                                  */
 /*============================================================================*/
@@ -516,11 +471,11 @@ static void MX_GPIO_Init(void)
     GPIO_InitStruct.Pin = PED_EAST.pin;
     HAL_GPIO_Init(PED_EAST.port, &GPIO_InitStruct);
 
-    TL_Init(&tlSouth);
-    TL_Init(&tlNorth);
-    TL_Init(&tlEast);
-    PL_Init(&plSouth);
-    PL_Init(&plEast);
+    TL_Init(&trafficLightSouth);
+    TL_Init(&trafficLightNorth);
+    TL_Init(&trafficLightEast);
+    PL_Init(&pedestrianLightSouth);
+    PL_Init(&pedestrianLightEast);
 
     HAL_GPIO_WritePin(PED_SOUTH.port, PED_SOUTH.pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(PED_EAST.port,  PED_EAST.pin,  GPIO_PIN_RESET);
