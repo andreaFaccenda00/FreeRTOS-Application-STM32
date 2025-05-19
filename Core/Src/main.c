@@ -180,14 +180,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     if (GPIO_Pin == GPIO_PIN_13)
     {
-    	osEventFlagsSet(flagsId, PED_FLAG);
-
-        if (currentPhase == PHASE_NS) {
-            osThreadFlagsSet(nsTaskHandle, IRQ_FLAG);
-        } else if (currentPhase == PHASE_EST) {
-            osThreadFlagsSet(estTaskHandle, IRQ_FLAG);
-        }
-
 		osMutexAcquire(oledMutex, osWaitForever);
 		ssd1306_Fill(Black);
 		ssd1306_SetCursor(0, 0);
@@ -209,7 +201,6 @@ void NSTask(void *argument)
     for (;;)
     {
         osSemaphoreAcquire(semNS, osWaitForever);
-        osEventFlagsClear(flagsId, PED_FLAG);
 
         if (osEventFlagsGet(flagsId) & EMG_FLAG) {
             osEventFlagsClear(flagsId, EMG_FLAG);
@@ -232,7 +223,7 @@ void NSTask(void *argument)
 		ssd1306_UpdateScreen();
 	    osMutexRelease(oledMutex);
 
-        bool pedReq = (osEventFlagsGet(flagsId) & PED_FLAG) != 0;
+	    bool pedReq = false;
         uint32_t greenMs  = pedReq
                            ? (T_GREEN_MS/2)
                            : ((vehiclesS > PRIORITY_THRESHOLD || vehiclesN > PRIORITY_THRESHOLD)
@@ -246,31 +237,11 @@ void NSTask(void *argument)
 
         uint32_t flags = osEventFlagsWait(
             flagsId,
-            EMG_FLAG | PED_FLAG,
+            EMG_FLAG, //| PED_FLAG,
             osFlagsWaitAny,
             greenMs
         );
         if (flags & EMG_FLAG) {
-            continue;
-        }
-        if (flags & PED_FLAG) {
-            LogEvent("NS","GIALLO",vehiclesS,vehiclesN,0);
-            TL_SetState(&tlSouth, TL_YELLOW);
-            TL_SetState(&tlNorth, TL_YELLOW);
-
-            flags = osEventFlagsWait(
-                flagsId,
-                EMG_FLAG,
-                osFlagsWaitAny,
-                yellowMs
-            );
-            if (flags & EMG_FLAG) { continue; }
-
-            LogEvent("NS","ROSSO",vehiclesS,vehiclesN,0);
-            TL_SetState(&tlSouth, TL_RED);
-            TL_SetState(&tlNorth, TL_RED);
-            osSemaphoreRelease(semPed);
-            osEventFlagsClear(flagsId, PED_FLAG);
             continue;
         }
 
@@ -331,7 +302,7 @@ void EstTask(void *argument)
 		ssd1306_UpdateScreen();
 	    osMutexRelease(oledMutex);
 
-        bool pedReq = (osEventFlagsGet(flagsId) & PED_FLAG) != 0;
+        bool pedReq = false;
         uint32_t greenMs  = pedReq
                            ? (T_GREEN_MS/2)
                            : ((vehiclesE > PRIORITY_THRESHOLD)
@@ -343,29 +314,11 @@ void EstTask(void *argument)
 
         uint32_t flags = osEventFlagsWait(
             flagsId,
-            EMG_FLAG | PED_FLAG,
+            EMG_FLAG ,//| PED_FLAG,
             osFlagsWaitAny,
             greenMs
         );
         if (flags & EMG_FLAG) {
-            continue;
-        }
-        if (flags & PED_FLAG) {
-            LogEvent("Est","GIALLO",0,0,vehiclesE);
-            TL_SetState(&tlEast, TL_YELLOW);
-
-            flags = osEventFlagsWait(
-                flagsId,
-                EMG_FLAG,
-                osFlagsWaitAny,
-                yellowMs
-            );
-            if (flags & EMG_FLAG) { continue; }
-
-            LogEvent("Est","ROSSO",0,0,vehiclesE);
-            TL_SetState(&tlEast, TL_RED);
-            osSemaphoreRelease(semPed);
-            osEventFlagsClear(flagsId, PED_FLAG);
             continue;
         }
 
@@ -435,7 +388,6 @@ void PedTask(void *argument)
         PL_Off(&plSouth);
         PL_Off(&plEast);
         LogEvent("Ped","OFF",0,0,0);
-        osEventFlagsClear(flagsId, PED_FLAG);
 
         flags = osEventFlagsWait(
             flagsId,
