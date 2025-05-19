@@ -1,27 +1,19 @@
 SWV ITM Data Console - ITM Port: 0
-   0.102 s | NS | S= 5 N=17 E= 0 | EXTEND
-   6.103 s | NS | S= 5 N=17 E= 0 | GIALLO
-   7.603 s | NS | S= 5 N=17 E= 0 | ROSSO
-   8.705 s | Est | S= 0 N= 0 E=15 | VERDE
-  12.705 s | Est | S= 0 N= 0 E=15 | GIALLO
-  14.205 s | Est | S= 0 N= 0 E=15 | ROSSO
-  15.205 s | Ped | S= 0 N= 0 E= 0 | ON
-  19.205 s | Ped | S= 0 N= 0 E= 0 | BLINK
-  20.002 s | NS | S=20 N=16 E= 0 | EXTEND
-  20.103 s | Est | S= 0 N= 0 E= 7 | VERDE
-  20.205 s | Ped | S= 0 N= 0 E= 0 | OFF
-  21.205 s | Ped | S= 0 N= 0 E= 0 | ON
-  24.103 s | Est | S= 0 N= 0 E= 7 | GIALLO
-  25.205 s | Ped | S= 0 N= 0 E= 0 | BLINK
-  25.603 s | Est | S= 0 N= 0 E= 7 | ROSSO
-  26.002 s | NS | S=20 N=16 E= 0 | GIALLO
-  26.205 s | Ped | S= 0 N= 0 E= 0 | OFF
-  27.205 s | Ped | S= 0 N= 0 E= 0 | ON
-  27.502 s | NS | S=20 N=16 E= 0 | ROSSO
-  28.504 s | NS | S= 2 N= 7 E= 0 | VERDE
-  28.605 s | Est | S= 0 N= 0 E=19 | EXTEND
-  31.205 s | Ped | S= 0 N= 0 E= 0 | BLINK
-  32.205 s | Ped | S= 0 N= 0 E= 0 | OFF
-  32.504 s | NS | S= 2 N= 7 E= 0 | GIALLO
-*** Reset causato da IWDG ***
-   0.102 s | NS | S= 5 N=17 E= 0 | EXTEND
+11744992 us | EMG_LOOP_START
+11745157 us | NsTASK_START
+16729196 us | ISR_PED
+17831023 us | EstTASK_START
+21683007 us | PedTASK_START
+2418505 us | NsTASK_START
+9021510 us | EstTASK_START
+12902867 us | ISR_PED
+15505493 us | PedTASK_START
+21505505 us | NsTASK_START
+4843996 us | EstTASK_START
+11445980 us | PedTASK_START
+17445991 us | NsTASK_START
+21418969 us | EMG_WAKEUP
+1256465 us | EMG_LOOP_START
+1256604 us | NsTASK_START
+7859483 us | EstTASK_START
+14461466 us | PedTASK_START

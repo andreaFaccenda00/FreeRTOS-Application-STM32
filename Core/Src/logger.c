@@ -1,24 +1,23 @@
 #include "logger.h"
 #include <stdio.h>
+#include "stm32g4xx.h"
+#include "system_stm32g4xx.h"
 #include "cmsis_os2.h"
 
-void LogEvent(const char* phase,
-              const char* info,
-              uint32_t S,
-              uint32_t N,
-              uint32_t E)
-{
-    uint32_t ticks   = osKernelGetTickCount();    // in ms
-    uint32_t seconds = ticks / 1000U;
-    uint32_t ms      = ticks % 1000U;
+extern uint32_t SystemCoreClock;
 
-    // Format: " 123.456s | PHASE | S=xx N=yy E=zz | INFO"
-    printf("%4lu.%03lu s | %s | S=%2lu N=%2lu E=%2lu | %s\r\n",
-           (unsigned long)seconds,
+static inline uint32_t GetTimestampUs(void)
+{
+    return (uint32_t)((uint64_t)DWT->CYCCNT * 1000000ULL / SystemCoreClock);
+}
+
+void LogEventTS(const char* tag)
+{
+    uint32_t us = GetTimestampUs();
+    uint32_t ms = osKernelGetTickCount();
+
+    printf("%7lu us | %5lu ms | %s\r\n",
+           (unsigned long)us,
            (unsigned long)ms,
-           phase,
-           (unsigned long)S,
-           (unsigned long)N,
-           (unsigned long)E,
-           info);
+           tag);
 }

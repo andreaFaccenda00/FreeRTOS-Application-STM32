@@ -8,14 +8,10 @@ extern "C" {
 #endif
 
 /**
- * @brief  Log an event with timestamp, phase, vehicle counts and info.
- * @param  phase  String describing the current phase (e.g. "NS").
- * @param  info   Description of the event (e.g. "VERDE(PRIO)").
- * @param  S      Number of vehicles south (or generic count1).
- * @param  N      Number of vehicles north (or generic count2).
- * @param  E      Number of vehicles east (or generic count2).
+ * @brief  Logga un evento con timestamp preso da DWT->CYCCNT.
+ * @param  tag    Tag string identifying the event (e.g. "ISR_PED", "NSTASK").
  */
-void LogEvent(const char* phase, const char* info, uint32_t S, uint32_t N, uint32_t E );
+void LogEventTS(const char* tag);
 
 #ifdef __cplusplus
 }

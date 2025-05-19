@@ -146,7 +146,11 @@ void EmergencyTask(void *argument)
     const uint32_t period_ms = 60000;
     for (;;)
     {
-        osDelay(period_ms);
+    	LogEventTS("EmgTASK_START");
+
+    	osDelay(period_ms);
+
+    	LogEventTS("EmgTASK_WAKEUP");
 
 		osMutexAcquire(oledMutex, osWaitForever);
 		ssd1306_Fill(Black);
@@ -166,6 +170,7 @@ void EmergencyTask(void *argument)
         HAL_GPIO_WritePin(GPIOC, GPIO_PIN_7, GPIO_PIN_RESET);
 
         while (osSemaphoreAcquire(semNS, 0) == osOK);
+        LogEventTS("EmgTASK_END");
         osSemaphoreRelease(semNS);
 
         osEventFlagsClear(flagsId, EMG_FLAG);
@@ -180,7 +185,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     if (GPIO_Pin == GPIO_PIN_13)
     {
-		osMutexAcquire(oledMutex, osWaitForever);
+    	LogEventTS("ISR_PED");
+    	osMutexAcquire(oledMutex, osWaitForever);
 		ssd1306_Fill(Black);
 		ssd1306_SetCursor(0, 0);
         ssd1306_WriteString("Pedestrian Wait", Font_16x15, White);
@@ -188,8 +194,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 	    osMutexRelease(oledMutex);
 
         osEventFlagsSet(flagsId, PED_FLAG_NS | PED_FLAG_EST);
-
-        LogEvent("Button", "PED_PRIO", 0, 0, 0);
 
     }
 }
@@ -203,6 +207,7 @@ void NSTask(void *argument)
     for (;;)
     {
         osSemaphoreAcquire(semNS, osWaitForever);
+        LogEventTS("NsTASK_START");
 
         if (osEventFlagsGet(flagsId) & EMG_FLAG) {
             osEventFlagsClear(flagsId, EMG_FLAG);
@@ -251,7 +256,6 @@ void NSTask(void *argument)
 
         if (flags & PED_FLAG_NS) {osEventFlagsClear(flagsId, PED_FLAG_NS);}
 
-        LogEvent("NS","GIALLO",vehiclesS,vehiclesN,0);
         TL_SetState(&tlSouth, TL_YELLOW);
         TL_SetState(&tlNorth, TL_YELLOW);
 
@@ -264,7 +268,6 @@ void NSTask(void *argument)
         if (flags & EMG_FLAG) { continue; }
         if (flags & PED_FLAG_NS) {osEventFlagsClear(flagsId, PED_FLAG_NS);}
 
-        LogEvent("NS","ROSSO",vehiclesS,vehiclesN,0);
         TL_SetState(&tlSouth, TL_RED);
         TL_SetState(&tlNorth, TL_RED);
 
@@ -276,6 +279,7 @@ void NSTask(void *argument)
         );
         if (flags & EMG_FLAG) { continue; }
 
+        LogEventTS("NsTASK_END");
         osSemaphoreRelease(semEst);
         osSemaphoreRelease(semEst);
     }
@@ -291,6 +295,7 @@ void EstTask(void *argument)
     {
         osSemaphoreAcquire(semEst, osWaitForever);
         osSemaphoreAcquire(semEst, osWaitForever);
+        LogEventTS("EstTASK_START");
 
         if (osEventFlagsGet(flagsId) & EMG_FLAG) {
             osEventFlagsClear(flagsId, EMG_FLAG);
@@ -332,7 +337,6 @@ void EstTask(void *argument)
         if (flags & EMG_FLAG) {continue;}
         if (flags & PED_FLAG_EST) {osEventFlagsClear(flagsId, PED_FLAG_EST);}
 
-        LogEvent("Est","GIALLO",0,0,vehiclesE);
         TL_SetState(&tlEast, TL_YELLOW);
 
         flags = osEventFlagsWait(
@@ -344,7 +348,6 @@ void EstTask(void *argument)
         if (flags & EMG_FLAG) { continue; }
         if (flags & PED_FLAG_EST) {osEventFlagsClear(flagsId, PED_FLAG_EST);}
 
-        LogEvent("Est","ROSSO",0,0,vehiclesE);
         TL_SetState(&tlEast, TL_RED);
 
         flags = osEventFlagsWait(
@@ -355,6 +358,7 @@ void EstTask(void *argument)
         );
         if (flags & EMG_FLAG) { continue; }
 
+        LogEventTS("EstTASK_END");
         osSemaphoreRelease(semPed);
     }
 }
@@ -367,6 +371,7 @@ void PedTask(void *argument)
     for (;;)
     {
         osSemaphoreAcquire(semPed, osWaitForever);
+        LogEventTS("PedTASK_START");
 
         osEventFlagsClear(flagsId, PED_FLAG_NS | PED_FLAG_EST);
 
@@ -375,7 +380,6 @@ void PedTask(void *argument)
             continue;
         }
 
-        LogEvent("Ped","ON",0,0,0);
         PL_On(&plSouth);
         PL_On(&plEast);
 
@@ -388,7 +392,6 @@ void PedTask(void *argument)
         );
         if (flags & EMG_FLAG) { continue; }
 
-        LogEvent("Ped","BLINK",0,0,0);
         for (uint32_t i = 0; i < T_PED_BLINK_MS / T_PED_BLINK_INTERVAL_MS; ++i) {
             if (osEventFlagsGet(flagsId) & EMG_FLAG) {
                 break;
@@ -400,7 +403,6 @@ void PedTask(void *argument)
 
         PL_Off(&plSouth);
         PL_Off(&plEast);
-        LogEvent("Ped","OFF",0,0,0);
 
         flags = osEventFlagsWait(
             flagsId,
@@ -409,7 +411,7 @@ void PedTask(void *argument)
             1000U
         );
         if (flags & EMG_FLAG) { continue; }
-
+        LogEventTS("PedTASK_END");
         osSemaphoreRelease(semNS);
     }
 }
