@@ -1,20 +1,13 @@
+// logger.h
 #ifndef LOGGER_H
 #define LOGGER_H
 
-#include <stdint.h>
+#include "cmsis_os2.h"
+#include <stdio.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/**
- * @brief  Logga un evento con timestamp preso da DWT->CYCCNT.
- * @param  tag    Tag string identifying the event (e.g. "ISR_PED", "NSTASK").
- */
+void EnableDWT(void);
+uint32_t GetTimestampUs(void);
 void LogEventTS(const char* tag);
-
-#ifdef __cplusplus
-}
-#endif
+void LogEventValueTS(const char* tag, uint32_t value);
 
 #endif // LOGGER_H

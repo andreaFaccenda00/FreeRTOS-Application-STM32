@@ -19,13 +19,13 @@
 
 This project implements a **real-time traffic light control system** on an STM32 microcontroller using **CMSIS-RTOS2** (based on FreeRTOS). Key features include:
 
-- 🚘 Management of three traffic light units (North-South, East, Emergency)
-- 🚶‍♂️ Pedestrian crossing support with LED indication and blink phase
-- 🔁 Task-based control architecture with inter-task synchronization
-- 📊 Dynamic traffic monitoring with green light extension
-- 📺 Real-time **OLED traffic monitor** synchronized via mutex
-- 🚨 Emergency priority lane handling with exclusive green light
-- ⏱️ Preemption-based event handling using `osThreadFlags`
+- 🚘 Management of three traffic light units: North-South, East, and Emergency
+- 🚶‍♂️ Pedestrian crossing support with steady and blinking light phases
+- 🔁 Fully task-based logic with inter-task signaling
+- 📺 OLED display integration to show live traffic and pedestrian states
+- 🚨 Emergency vehicle preemption interrupting normal traffic
+- 📊 Logger for timing metrics and system performance
+- 🧠 Safe concurrent access to shared resources via `osMutex`
 
 ---
 
@@ -35,58 +35,55 @@ This project implements a **real-time traffic light control system** on an STM32
 
 | Task Name       | Description                                                                 |
 |----------------|-----------------------------------------------------------------------------|
-| `NSTask`        | Manages North-South lights (PA0, PA1, PA4 + PC10–12)                        |
-| `EstTask`       | Manages East traffic light (PC6, PC8, PC9)                                  |
-| `PedTask`       | Controls pedestrian LEDs (PB5, PB7) and logic                               |
-| `EmergencyTask` | Grants green to **emergency lane only**, interrupts other tasks             |
-| `LoggerTask`    | Records timing metrics for real-time performance analysis                   |
-
-All tasks accessing the OLED display use a **mutex** to ensure mutual exclusion during data output.
+| `NSTask`        | Controls North-South traffic flow with dynamic timing and pedestrian logic |
+| `EstTask`       | Manages East traffic light using the same logic as NS                      |
+| `PedTask`       | Controls pedestrian lights and blinking timing                             |
+| `EmergencyTask` | Interrupts all phases and prioritizes East emergency lane                  |
+| `LoggerTask`    | Collects and logs timing metrics using timestamps                          |
 
 ---
 
 ## 🔍 System Behavior
 
-### 🔁 Traffic Cycle Overview
+### 🔁 Traffic Phase Cycle
 
 1. **North-South Phase (`NSTask`)**
-   - Triggered by `semNS` (binary semaphore).
-   - Uses `rand()` to simulate vehicle count on both sides.
-   - High count → extended green; pedestrian request → halved green.
-   - OLED displays vehicle info and current state using **mutex** protection.
+   - Triggered by a binary semaphore `semNS`
+   - Random number of vehicles per direction (`rand()`)
+   - ⬆️ High traffic count → extended green
+   - 🚶 Pedestrian request → green/yellow durations halved
+   - Displays vehicle info on OLED (protected by mutex)
+   - Preemptible via emergency or pedestrian event flags
 
 2. **East Phase (`EstTask`)**
-   - Requires two tokens from `semEst`.
-   - Same dynamic duration and display logic as `NSTask`.
+   - Triggered by acquiring `semEst` **twice**
+   - Shares same logic and protections as `NSTask`
 
 3. **Pedestrian Phase (`PedTask`)**
-   - Triggered via `semPed`.
-   - LEDs ON for 4s, blink for 1s.
-   - Emergency interrupts this phase.
-   - OLED shows pedestrian countdown (via mutex).
+   - Activated via `semPed` from East phase
+   - LED steady ON for 4s, then blinks for 1s
+   - Interruptible at any moment by emergency flag
+   - Updates OLED (uses mutex)
 
 4. **Emergency Phase (`EmergencyTask`)**
-   - Every 15s, sets `EMG_FLAG` to preempt all tasks.
-   - Forces **green to emergency lane only**, red to others.
-   - Activates emergency LED (`PC7`) and resets semaphores.
-   - Also logs event to OLED using mutex.
+   - Wakes every 15 seconds
+   - Sends `EMG_FLAG` to preempt current task
+   - Forces RED on NS, GREEN on East
+   - Flushes pending semaphores to cancel queued traffic
+   - Activates emergency indicator (LED on PC7)
+   - Logs event and clears flag after cycle ends
 
-5. **Logger Task**
-   - Collects runtime statistics:
-     - **Wake-up latency** = `Task_START - ISR`
-     - **Task duration** = `Task_END - Task_START`
-     - **Wake-up jitter** = variation in successive latencies
-     - **Execution jitter** = variation in successive durations
+5. **Pedestrian Button**
+   - External interrupt on `PC13`
+   - Sets `PED_FLAG_NS` and `PED_FLAG_EST`
+   - Wakes any active traffic phase via `osEventFlags`
 
-### 🔘 Pedestrian Button
+6. **Inter-Phase Delay**
+   - 1-second all-red delay (`osDelay(1000)`) ensures safe phase transitions
 
-- External interrupt on `PC13` triggers pedestrian request.
-- Sets `PED_FLAG` and notifies the current phase using `osThreadFlagsSet`.
-
-### ⏸️ Inter-Phase Delay and Watchdog
-
-- All-red delay (`osDelay(1000)`) ensures safe transitions.
-- **IWDG watchdog** protects against task deadlocks.
+7. **Watchdog**
+   - IWDG is refreshed via `vApplicationIdleHook`
+   - Prevents system lock-up in case of scheduler failure
 
 ---
 
@@ -110,28 +107,40 @@ All tasks accessing the OLED display use a **mutex** to ensure mutual exclusion 
 | API                   | Use Case                                |
 |-----------------------|------------------------------------------|
 | `osThreadNew()`       | Thread creation                          |
-| `osSemaphoreNew()`    | Phase synchronization                    |
-| `osSemaphoreAcquire()`| Await phase                              |
-| `osSemaphoreRelease()`| Transition to next phase                 |
-| `osThreadFlagsSet()`  | Notify individual threads (e.g. EMG, PED)|
-| `osThreadFlagsWait()` | Handle preemption and external signals   |
-| `osMutexNew()`        | **Exclusive OLED access**                |
-| `osMutexAcquire()`    | Lock OLED display                        |
-| `osMutexRelease()`    | Unlock OLED display                      |
-| `osDelay()`           | Time-controlled transitions              |
+| `osSemaphoreNew()`    | Synchronize task phases                  |
+| `osSemaphoreAcquire()`| Wait for semaphore to begin execution    |
+| `osSemaphoreRelease()`| Signal next task or phase                |
+| `osEventFlagsSet()`   | Set emergency/pedestrian flags           |
+| `osEventFlagsGet()`   | Read flag status                         |
+| `osEventFlagsClear()` | Manually clear active flags              |
+| `osEventFlagsWait()`  | Wait on multiple interruptible events    |
+| `osMutexNew()`        | Protect OLED (shared resource)           |
+| `osMutexAcquire()`    | Enter critical section                   |
+| `osMutexRelease()`    | Exit critical section                    |
+| `osDelay()`           | Timed delays for traffic/phases          |
+
+### 🧠 Critical Sections & Concurrency Notes
+
+- 🖥️ **OLED Display Access** is mutex-protected to prevent concurrent updates.
+- 🚨 **Interrupt routines do not use mutexes**, to remain ISR-safe.
+- 🧹 **EmergencyTask flushes semaphores** (`while(...)`) to forcibly interrupt queued tasks.
+- 🧯 Tasks clear event flags manually after handling (no auto-clear).
+- 🧩 Tasks wait on **multiple flags** (`osFlagsWaitAny`) to support simultaneous event detection (e.g., EMG + PED).
+- 🔁 Transitions are atomic and safe from race conditions thanks to `semaphore` + `flag` handling.
 
 ---
 
 ## 📊 RTOS Profiling & Logger
 
-To assess **real-time performance**, the system logs:
+| Metric               | Description                              |
+|----------------------|------------------------------------------|
+| **Wake-up Latency**  | `Task_START - ISR`                       |
+| **Task Duration**    | `Task_END - Task_START`                  |
+| **Jitter (Latency)** | Δ between successive ISR-to-task delays  |
+| **Jitter (Duration)**| Δ between execution durations            |
 
-- **Wake-up Latency**: `Task_START - ISR`
-- **Task Duration**: `Task_END - Task_START`
-- **Jitter (Latency)**: Δ between successive wake-ups
-- **Jitter (Duration)**: Δ between successive executions
-
-Timestamps are derived from the DWT cycle counter and printed via `printf()` on the serial monitor.
+- Logged using `LogEventTS()` with DWT-based timestamps
+- Output printed via UART/Serial for analysis
 
 ---
 
@@ -139,9 +148,9 @@ Timestamps are derived from the DWT cycle counter and printed via `printf()` on 
 
 | Component            | Port | Pins                        |
 |----------------------|------|-----------------------------|
-| North-South Lights   | A    | PA0, PA1, PA4               |
-| North Duplicate      | C    | PC10, PC11, PC12            |
-| East Light           | C    | PC6, PC8, PC9               |
+| North-South Lights   | A    | PA0 (Red), PA1 (Yellow), PA4 (Green) |
+| North Duplicate      | C    | PC10 (Red), PC11 (Yellow), PC12 (Green) |
+| East Light           | C    | PC6 (Green), PC8 (Yellow), PC9 (Red) |
 | Pedestrian LEDs      | B    | PB5 (South), PB7 (East)     |
 | Pedestrian Button    | C    | PC13                        |
 | Emergency LED        | C    | PC7                         |
@@ -151,22 +160,23 @@ Timestamps are derived from the DWT cycle counter and printed via `printf()` on 
 
 ## 🧰 Development Environment
 
-- 💻 **STM32CubeIDE**
-- ⚙️ **STM32 HAL Drivers**
-- 🧵 **CMSIS-RTOS2 (FreeRTOS)**
-- 🔌 **STM32G4 Nucleo Board**
-- 📺 **OLED Display SSD1306 via I2C**
-- 🖨️ **Serial debug via `printf()` and DWT timer**
+- 💻 **STM32CubeIDE** (G4 Series)
+- 📦 **STM32 HAL Drivers**
+- 🧵 **CMSIS-RTOS2** (FreeRTOS-based)
+- 🔌 **Nucleo-G4 board**
+- 📺 **OLED SSD1306** via I2C (mutex-protected)
+- 🖨️ **Serial debugging** with `printf()` and DWT timer
+- 🔐 **IWDG Watchdog** enabled, refreshed in idle hook
 
 ---
 
 ## 🚀 Future Improvements
 
-- 📡 Replace random vehicle input with IR sensors
-- 📲 UART interface for remote control
-- 🌐 Real-time web dashboard with ESP32 bridge
-- 🔔 Add buzzer for visually impaired pedestrians
-- 📈 Export logger data via USB/UART for PC analysis
+- 📡 Replace `rand()` with real-time IR sensors
+- 📲 Add UART-based configuration interface
+- 🌐 ESP32 bridge for web dashboard and MQTT control
+- 🔔 Buzzer module for accessibility (blind pedestrians)
+- 📈 Export logs via USB or UART to external PC tools
 
 ---
 
@@ -174,3 +184,4 @@ Timestamps are derived from the DWT cycle counter and printed via `printf()` on 
 
 © 2025 STMicroelectronics  
 Released under **educational and non-commercial use only**.
+

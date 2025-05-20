@@ -770,6 +770,7 @@ static void vPortEnableVFP( void )
 		configASSERT( ( portAIRCR_REG & portPRIORITY_GROUP_MASK ) <= ulMaxPRIGROUPValue );
 	}
 
+
 #endif /* configASSERT_DEFINED */
 
 
